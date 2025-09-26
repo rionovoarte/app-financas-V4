@@ -131,8 +131,9 @@ function getFinancialDataForAI() {
     // Calcula resumos financeiros com base nos dados GLOBAIS
     let totalGlobalIncome = 0;
     let totalGlobalPaidExpenses = 0;
+    const confirmedStatuses = new Set(['Recebido', 'Pago', 'Confirmado']);
     transactions.forEach(t => {
-        const isConfirmed = t.status === 'Recebido' || t.status === 'Pago' || t.status === 'Confirmado';
+        const isConfirmed = confirmedStatuses.has(t.status);
         if (isConfirmed) {
             if (t.type === 'income') totalGlobalIncome += parseFloat(t.amount);
             else if (t.type === 'expense') totalGlobalPaidExpenses += parseFloat(t.amount);
@@ -150,6 +151,88 @@ function getFinancialDataForAI() {
         .filter(cat => cat.type === 'caixinha')
         .reduce((sum, caixinha) => sum + parseFloat(caixinha.savedAmount || 0), 0);
 
+    // --- Resumo detalhado do mês atual ---
+    const today = new Date();
+    const currentMonthKey = getCurrentMonthYYYYMM(today);
+    const monthTransactions = transactions.filter(t => {
+        if (!t.date) return false;
+        const transactionDate = new Date(t.date);
+        if (Number.isNaN(transactionDate.getTime())) return false;
+        return getCurrentMonthYYYYMM(transactionDate) === currentMonthKey;
+    });
+
+    let monthIncome = 0;
+    let monthEssentialExpenses = 0;
+    let monthNonEssentialExpenses = 0;
+    let monthCaixinhaDeposits = 0;
+    let monthCaixinhaWithdrawals = 0;
+    const nonEssentialCategoryTotals = {};
+    const essentialCategoryTotals = {};
+
+    monthTransactions.forEach(t => {
+        const amount = parseFloat(t.amount);
+        if (Number.isNaN(amount)) return;
+        const category = categories.find(cat => cat.id === t.categoryId);
+        const isConfirmed = confirmedStatuses.has(t.status);
+        if (!isConfirmed) return;
+
+        if (t.type === 'income') {
+            monthIncome += amount;
+        } else if (t.type === 'expense') {
+            const isNonEssential = category && category.priority === 'non-essential';
+            if (isNonEssential) {
+                monthNonEssentialExpenses += amount;
+                nonEssentialCategoryTotals[category.id] = (nonEssentialCategoryTotals[category.id] || 0) + amount;
+            } else {
+                monthEssentialExpenses += amount;
+                if (category) {
+                    essentialCategoryTotals[category.id] = (essentialCategoryTotals[category.id] || 0) + amount;
+                }
+            }
+        } else if (t.type === 'caixinha') {
+            if (t.transactionType === 'deposit') monthCaixinhaDeposits += amount;
+            if (t.transactionType === 'withdraw') monthCaixinhaWithdrawals += amount;
+        }
+    });
+
+    const topNonEssentialCategories = Object.entries(nonEssentialCategoryTotals)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([categoryId, total]) => ({
+            name: categoryMap[categoryId] || 'Categoria não identificada',
+            total
+        }));
+
+    const topEssentialPressureCategories = Object.entries(essentialCategoryTotals)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([categoryId, total]) => ({
+            name: categoryMap[categoryId] || 'Categoria não identificada',
+            total
+        }));
+
+    const budgetsThisMonth = budgets.filter(b => b.month === currentMonthKey);
+    const budgetSummaries = budgetsThisMonth.map(budget => {
+        const categoryName = categoryMap[budget.categoryId] || 'Categoria desconhecida';
+        const actualSpent = monthTransactions
+            .filter(t => t.categoryId === budget.categoryId && t.type === 'expense' && confirmedStatuses.has(t.status))
+            .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+        const remaining = budget.amount - actualSpent;
+        return {
+            categoryName,
+            planned: budget.amount,
+            spent: actualSpent,
+            remaining
+        };
+    });
+
+    const caixinhasDetails = categories
+        .filter(cat => cat.type === 'caixinha')
+        .map(cat => ({
+            name: cat.name,
+            saved: parseFloat(cat.savedAmount || 0)
+        }));
+
     // --- FORMATAÇÃO DA STRING PARA A IA ---
     let dataString = `A data de hoje é ${new Date().toLocaleDateString('pt-BR')}.\n\n`;
 
@@ -159,6 +242,49 @@ function getFinancialDataForAI() {
     dataString += `- Quantidade de Despesas Pendentes: ${countPending}\n`;
     dataString += `- Valor Total de Despesas Pendentes: ${formatCurrency(totalPending)}\n`;
     dataString += `- Total Guardado em Caixinhas: ${formatCurrency(totalCaixinhasSaved)}\n\n`;
+
+    // 2. Resumo detalhado do mês atual
+    dataString += "<strong>RESUMO DO MÊS ATUAL (apenas lançamentos confirmados):</strong>\n";
+    dataString += `- Receitas do mês: ${formatCurrency(monthIncome)}\n`;
+    dataString += `- Despesas essenciais do mês: ${formatCurrency(monthEssentialExpenses)}\n`;
+    dataString += `- Despesas não essenciais do mês: ${formatCurrency(monthNonEssentialExpenses)}\n`;
+    dataString += `- Depósitos em caixinhas no mês: ${formatCurrency(monthCaixinhaDeposits)}\n`;
+    dataString += `- Resgates de caixinhas no mês: ${formatCurrency(monthCaixinhaWithdrawals)}\n\n`;
+
+    if (topNonEssentialCategories.length > 0) {
+        dataString += "<strong>Maiores gastos não essenciais do mês:</strong>\n";
+        topNonEssentialCategories.forEach(item => {
+            dataString += `- ${item.name}: ${formatCurrency(item.total)}\n`;
+        });
+    } else {
+        dataString += "Não foram registradas despesas não essenciais confirmadas neste mês.\n";
+    }
+
+    if (topEssentialPressureCategories.length > 0) {
+        dataString += "\n<strong>Categorias essenciais que mais consumiram o orçamento neste mês:</strong>\n";
+        topEssentialPressureCategories.forEach(item => {
+            dataString += `- ${item.name}: ${formatCurrency(item.total)}\n`;
+        });
+    }
+
+    if (budgetSummaries.length > 0) {
+        dataString += "\n<strong>Orçamentos e metas do mês atual:</strong>\n";
+        budgetSummaries.forEach(summary => {
+            const statusText = summary.remaining >= 0
+                ? `Disponível: ${formatCurrency(summary.remaining)}`
+                : `Ultrapassou em ${formatCurrency(Math.abs(summary.remaining))}`;
+            dataString += `- ${summary.categoryName}: Planejado ${formatCurrency(summary.planned)}, Gasto ${formatCurrency(summary.spent)}, ${statusText}\n`;
+        });
+    } else {
+        dataString += "\nNenhum orçamento foi configurado para o mês atual.\n";
+    }
+
+    if (caixinhasDetails.length > 0) {
+        dataString += "\n<strong>Caixinhas e objetivos de poupança:</strong>\n";
+        caixinhasDetails.forEach(detail => {
+            dataString += `- ${detail.name}: Saldo atual ${formatCurrency(detail.saved)}\n`;
+        });
+    }
 
     // 2. Lista de Transações Pendentes (se houver)
     if (countPending > 0) {
@@ -301,11 +427,11 @@ async function checkAndSendDailyNotification() {
 
     // 4. Gera um insight rápido da IA como resumo do dia
     const insightPrompt = `
-        Analise os dados financeiros a seguir.
-        Sua tarefa é fornecer um insight MUITO CURTO e direto (máximo de 2 frases) para ser usado em uma notificação.
-        Foque em UMA informação útil para o usuário saber hoje, como o saldo atual ou o total de despesas pendentes.
-        Exemplo: "Seu saldo atual é de R$ 1.234,56 e você possui R$ 500,00 em contas pendentes."
-        Responda apenas com o texto do insight, sem formatação.
+        Você está assessorando um casal que precisa de lembretes objetivos para economizar.
+        Gere um insight muito curto (máximo de 2 frases) pronto para uma notificação.
+        Destaque o ponto mais urgente para hoje: corte de gasto não essencial, pagamento essencial pendente ou status de orçamento/caixinha.
+        Jamais realize cálculos ou estimativas — use apenas os números fornecidos.
+        Responda somente com texto simples, sem formatação ou emojis.
 
         DADOS:
         ${getFinancialDataForAI()}
@@ -729,10 +855,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         onSnapshot(getUserDocumentRef('settings', 'aiConfig'), (docSnap) => {
             if (docSnap.exists()) {
                 const data = docSnap.data();
-                aiConfig.aiPersona = data.aiPersona || "Você é um educador financeiro especialista...";
+                aiConfig.aiPersona = data.aiPersona || "Você é uma mentora financeira acolhedora e objetiva que orienta um casal brasileiro a cortar supérfluos, priorizar contas essenciais e seguir as metas do app.";
                 aiConfig.aiPersonality = data.aiPersonality || "";
             } else {
-                 aiConfig.aiPersona = "Você é um educador financeiro especialista...";
+                 aiConfig.aiPersona = "Você é uma mentora financeira acolhedora e objetiva que orienta um casal brasileiro a cortar supérfluos, priorizar contas essenciais e seguir as metas do app.";
                  aiConfig.aiPersonality = "";
             }
             // Popula os campos da UI com os valores carregados ou padrão
@@ -2189,15 +2315,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         const persona = aiConfig.aiPersona || "";
         const personality = aiConfig.aiPersonality || "";
 
-        const baseSystemInstruction = `Você é um assistente financeiro especialista. Sua função é analisar os dados fornecidos e responder às perguntas do usuário com base NESSES DADOS.
+        const baseSystemInstruction = `Você é um assistente financeiro dedicado a orientar um casal brasileiro que está aprendendo educação financeira. O foco absoluto é economizar, cortar gastos não essenciais, proteger despesas essenciais e manter as metas configuradas no app.
 
 <strong>REGRAS DE COMPORTAMENTO CRÍTICAS E INVIOLÁVEIS:</strong>
-1.  <strong>NÃO FAÇA CÁLCULOS NEM CONTAGENS:</strong> Você está **TERMINANTEMENTE PROIBIDO** de somar valores ou contar itens de listas.
-2.  <strong>USE OS TOTAIS FORNECIDOS:</strong> Para responder sobre saldos, totais ou quantidades, você **DEVE** usar os valores pré-calculados que estão na seção "RESUMO FINANCEIRO (DADOS PRÉ-CALCULADOS)". Por exemplo, se perguntarem o número de despesas pendentes, use o valor de "Quantidade de Despesas Pendentes".
-3.  <strong>SEJA UM APRESENTADOR DE DADOS:</strong> Sua principal função é apresentar os dados que foram fornecidos a você. Se o usuário pedir para listar as despesas pendentes, use a "LISTA DETALHADA DE TRANSAÇÕES PENDENTES".
-4.  <strong>BASEADO EM DADOS, SEM ALARMISMO:</strong> Suas análises devem ser 100% baseadas nos dados fornecidos. Não use linguagem alarmista como "situação crítica". Em vez disso, aponte os fatos. Ex: "Observei que o valor total de suas despesas pendentes é maior que o seu saldo disponível."
-5.  <strong>NÃO PEÇA INFORMAÇÕES NEM REALIZE AÇÕES:</strong> Você já tem todos os dados. Você não pode adicionar, editar ou apagar nada. NUNCA peça ao usuário para registrar transações ou sugira que você pode fazer algo por ele. Se uma informação não está no resumo, diga que não a encontrou.
-6.  <strong>PERSONA E FORMATAÇÃO:</strong> Siga estritamente o papel e o tom definidos abaixo e use apenas HTML básico (<strong>, <br>, <ul>, <li>). NUNCA use Markdown.
+1.  <strong>NÃO FAÇA CÁLCULOS NEM CONTAGENS:</strong> Você está <strong>terminantemente proibido</strong> de somar valores, calcular diferenças ou contar itens. Use apenas os números já prontos.
+2.  <strong>USE OS TOTAIS FORNECIDOS:</strong> Sempre cite exatamente os valores exibidos nas seções "RESUMO FINANCEIRO", "Maiores gastos" e similares. Se algo não estiver nos dados, admita que não encontrou.
+3.  <strong>SEJA UM APRESENTADOR DE DADOS:</strong> Ao responder, aponte explicitamente de onde veio a informação (por exemplo, "no resumo do mês" ou "nas despesas pendentes").
+4.  <strong>FOCO EM ECONOMIA:</strong> A cada resposta, destaque oportunidades de cortar gastos não essenciais, renegociar despesas e reforçar o pagamento do que é essencial.
+5.  <strong>METAS E CAIXINHAS:</strong> Sempre que os dados trouxerem orçamentos ou caixinhas, mencione-os para reforçar prioridades e sugerir próximos passos sem recalcular valores.
+6.  <strong>NÃO PEÇA AÇÕES PARA VOCÊ MESMO:</strong> Você não adiciona nem altera dados. Oriente o casal a agir por conta própria caso necessário.
+7.  <strong>TOM E FORMATAÇÃO:</strong> Fale de forma acolhedora, direta e inclusiva (use "vocês"). Limite-se a HTML básico (<strong>, <br>, <ul>, <li>) e a respostas curtas (máximo de 6 frases ou 6 itens).
+8.  <strong>PERSONA:</strong> Siga o papel e o tom definidos abaixo sem inventar personas adicionais.
     *   <strong>Personagem:</strong> ${persona}
     *   <strong>Personalidade:</strong> ${personality}
 ---`;
@@ -2273,15 +2401,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         const financialData = getFinancialDataForAI();
 
         const insightPrompt = `
-            Analise os dados financeiros a seguir.
-            Sua tarefa é fornecer um insight CURTO e ACIONÁVEL em no máximo 3 frases.
-            Foque em apenas UM ponto principal: o maior gasto, uma oportunidade de economia ou um alerta importante (como contas pendentes atrasadas).
-            
-            REGRAS DE FORMATAÇÃO (OBRIGATÓRIO):
-            1.  **Use APENAS tags HTML**.
-            2.  Use <strong> para títulos ou alertas. Ex: <strong>Alerta de Gastos</strong>.
-            3.  Use <br> para quebras de linha.
-            4.  **NUNCA, EM HIPÓTESE ALGUMA, use Markdown (*, **, _, #, etc.)**. O uso de Markdown quebrará a interface.
+            Você está assessorando um casal brasileiro que busca economizar.
+            Leia os dados abaixo e produza um único insight acionável com no máximo 3 frases.
+            Priorize alertas sobre cortes de gastos não essenciais, reforço das despesas essenciais e andamento de orçamentos ou caixinhas.
+            Jamais faça cálculos, estimativas ou somas: repita exatamente os valores que encontrar.
+
+            FORMATAÇÃO OBRIGATÓRIA:
+            1. Use apenas tags HTML simples.
+            2. Utilize <strong> para o título ou alerta principal.
+            3. Use <br> para quebras de linha.
+            4. Não utilize Markdown nem emojis.
 
             DADOS PARA ANÁLISE:
             ${financialData}
@@ -2354,10 +2483,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         budgetDataString += "<br>--- Fim dos Dados de Orçamento ---<br><br>";
 
         const optimizationPrompt =
-            `Com base nos seguintes dados de orçamento do usuário, forneça sugestões claras e acionáveis para otimizar os gastos e gerenciar melhor o dinheiro. ` +
-            `Seja direto, prático e objetivo, como um consultor financeiro que não hesita em apontar onde o usuário pode melhorar. ` +
+            `Você está ajudando um casal brasileiro a revisar os orçamentos do mês. ` +
+            `Entregue orientações objetivas para proteger despesas essenciais, cortar supérfluos e realocar valores conforme necessário. ` +
+            `Nunca faça cálculos ou crie novos números: repita apenas os valores prontos. ` +
             `Use títulos em negrito (<strong>), listas não ordenadas (<ul>, <li>) e quebras de linha (<br>). ` +
-            `NUNCA use Markdown (*, **, _, #, etc.). ` +
+            `Jamais utilize Markdown, emojis ou textos fora desse formato. ` +
             `Aqui estão os dados: <br><br>${budgetDataString}`;
 
         const payload = {
@@ -3643,6 +3773,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             3.  **Sugestão de Categoria:** Para cada despesa NOVA, analise a 'description' e compare-a com a lista de 'categorias_existentes'.
                 - Se a descrição se encaixa bem em uma categoria existente, use o nome exato dessa categoria em 'suggestedCategoryName'.
                 - Se nenhuma categoria existente se encaixar bem, crie um nome de categoria novo, claro e conciso, para 'suggestedCategoryName'.
+            4.  **SEM CÁLCULOS:** Copie exatamente o valor informado em cada linha. Não some, subtraia ou estime qualquer número.
             
             ---
             DADOS FORNECIDOS PARA ANÁLISE:
