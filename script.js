@@ -1530,7 +1530,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         sortedDates.forEach(date => {
             const dateGroupDiv = document.createElement('div');
-            dateGroupDiv.className = 'mb-6 relative pl-8';
+            dateGroupDiv.className = 'transactions-date-group';
 
             const formattedDate = new Date(date + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
@@ -1538,7 +1538,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div class="timeline-bullet-date">
                     <i class="fa-solid fa-calendar-days text-xs"></i>
                 </div>
-                <h3 class="text-lg font-semibold mb-3 ml-2">${formattedDate}</h3>
+                <h3 class="text-lg font-semibold mb-3">${formattedDate}</h3>
                 <div class="space-y-3"></div>
             `;
             const transactionsForDateDiv = dateGroupDiv.querySelector('.space-y-3');
@@ -1600,7 +1600,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         `<span class="transaction-item-installment">(Parc. ${transaction.installmentNumber}/${transaction.totalInstallments})</span>` : '';
 
                 const transactionItem = document.createElement('div');
-                transactionItem.className = `bg-white p-4 rounded-lg shadow-sm flex justify-between items-center relative pl-8`; 
+                transactionItem.className = `transaction-entry flex justify-between items-center relative`;
                 transactionItem.innerHTML = `
                     <div class="${bulletClass}" style="${bulletStyle}" data-id="${transaction.id}"></div>
                     <div class="flex-grow min-w-0">
@@ -1887,6 +1887,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Lógica para o botão de editar
         const editButton = target.closest('.edit-transaction-button');
         if (editButton) {
+            e.preventDefault();
             const id = editButton.dataset.id;
             const transactionToEdit = transactions.find(t => t.id === id);
             if (transactionToEdit) {
@@ -1898,6 +1899,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Lógica para o botão de apagar
         const deleteButton = target.closest('.delete-transaction-button');
         if (deleteButton) {
+            e.preventDefault();
             const id = deleteButton.dataset.id;
             showConfirmationModal(
                 "Confirmar Exclusão",
@@ -1924,6 +1926,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Lógica para o botão de apagar recorrência
         const deleteRecurrenceButton = target.closest('.delete-recurrence-button');
         if (deleteRecurrenceButton) {
+            e.preventDefault();
             const recurrenceId = deleteRecurrenceButton.dataset.recurrenceId;
             showConfirmationModal(
                 "Confirmar Exclusão de Parcelas",
