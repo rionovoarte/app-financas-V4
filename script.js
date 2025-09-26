@@ -166,7 +166,8 @@ function createApiKeyHealthState(rawKey) {
             status: GEMINI_API_KEY_STATUS.AVAILABLE,
             disabledUntil: null,
             failureReason: null,
-            failureCount: 0
+            failureCount: 0,
+            lastSuccessfulModel: null
         };
     }
     return {
@@ -174,7 +175,8 @@ function createApiKeyHealthState(rawKey) {
         status: GEMINI_API_KEY_STATUS.AVAILABLE,
         disabledUntil: null,
         failureReason: null,
-        failureCount: 0
+        failureCount: 0,
+        lastSuccessfulModel: null
     };
 }
 
@@ -222,14 +224,16 @@ function hasAvailableGeminiKey(options = {}) {
     return !!trimmedKey && state.status === GEMINI_API_KEY_STATUS.AVAILABLE;
 }
 
-function markGeminiApiKeyAsHealthy() {
+function markGeminiApiKeyAsHealthy(options = {}) {
+    const { lastSuccessfulModel = null } = options;
     const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
     geminiApiKeyStatus = {
         ...state,
         status: GEMINI_API_KEY_STATUS.AVAILABLE,
         disabledUntil: null,
         failureReason: null,
-        failureCount: 0
+        failureCount: 0,
+        lastSuccessfulModel: lastSuccessfulModel || state.lastSuccessfulModel || null
     };
     persistGeminiApiKeyStatus();
     hasWarnedAllKeysBlocked = false;
@@ -263,7 +267,8 @@ function markGeminiApiKeyAsInvalid(reason) {
         status: GEMINI_API_KEY_STATUS.INVALID,
         disabledUntil: null,
         failureReason: reason || 'Chave inválida ou sem permissão.',
-        failureCount: (state.failureCount || 0) + 1
+        failureCount: (state.failureCount || 0) + 1,
+        lastSuccessfulModel: null
     };
     persistGeminiApiKeyStatus();
     scheduleNextGeminiKeyAvailabilityCheck();
@@ -338,22 +343,29 @@ function renderApiKeyStatusList() {
     const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
     let statusTitle = 'Ativa';
     let statusClass = 'text-green-600';
-    let extraInfo = '';
+    const extraInfoParts = [];
 
     if (state.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
         statusTitle = 'Em pausa';
         statusClass = 'text-amber-600';
-        extraInfo = formatCooldownMessage(state.disabledUntil);
+        extraInfoParts.push(formatCooldownMessage(state.disabledUntil));
         if (state.failureReason) {
-            extraInfo += ` · ${state.failureReason}`;
+            extraInfoParts.push(state.failureReason);
         }
     } else if (state.status === GEMINI_API_KEY_STATUS.INVALID) {
         statusTitle = 'Bloqueada';
         statusClass = 'text-red-600';
-        extraInfo = state.failureReason || 'Chave inválida ou sem permissão.';
-    } else if (state.failureReason) {
-        extraInfo = state.failureReason;
+        extraInfoParts.push(state.failureReason || 'Chave inválida ou sem permissão.');
+    } else {
+        if (state.lastSuccessfulModel) {
+            extraInfoParts.push(`Modelo ativo: ${state.lastSuccessfulModel}`);
+        }
+        if (state.failureReason) {
+            extraInfoParts.push(state.failureReason);
+        }
     }
+
+    const extraInfo = extraInfoParts.filter(Boolean).join(' · ');
 
     const extraInfoHtml = extraInfo
         ? `<p class="text-[0.7rem] text-gray-500 leading-snug">${extraInfo}</p>`
@@ -666,93 +678,130 @@ async function tryNextApiKey(payload) {
         throw error;
     }
 
-    const model = payload.generationConfig && payload.generationConfig.response_mime_type === "application/json"
-        ? "gemini-1.5-flash-latest"
-        : "gemini-1.5-flash-latest";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${trimmedKey}`;
-
-    console.log(`Tentando API Gemini com a chave configurada usando o modelo ${model}.`);
+    const candidateModels = [
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-flash'
+    ];
 
     let lastError = null;
+    let encounteredModelNotFound = false;
 
-    for (let retry = 0; retry < GEMINI_API_MAX_RETRIES_PER_KEY; retry++) {
-        try {
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+    for (let modelIndex = 0; modelIndex < candidateModels.length; modelIndex++) {
+        const model = candidateModels[modelIndex];
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${trimmedKey}`;
+        console.log(`Tentando API Gemini com a chave configurada usando o modelo ${model}.`);
 
-            if (!response.ok) {
-                let errorResult = null;
-                try {
-                    errorResult = await response.json();
-                } catch (jsonError) {
-                    console.warn('Não foi possível interpretar a resposta de erro da API Gemini.', jsonError);
-                }
-                const errorMessage = (errorResult && errorResult.error && errorResult.error.message) || response.statusText || 'Erro desconhecido.';
-                console.error('Erro da API Gemini:', errorMessage);
+        let shouldTryNextModel = false;
 
-                if (response.status === 429) {
-                    markGeminiApiKeyAsCoolingDown(GEMINI_API_RATE_LIMIT_COOLDOWN_MINUTES, 'Limite gratuito atingido');
-                    const rateLimitError = new Error('Limite de uso atingido para a chave atual.');
-                    rateLimitError.code = 'RATE_LIMIT';
-                    rateLimitError.userMessage = 'O limite gratuito da chave foi atingido. Aguardamos a liberação automática ou ajuste a chave em “Mais Opções > Gerenciar Chave”.';
-                    lastError = rateLimitError;
+        for (let retry = 0; retry < GEMINI_API_MAX_RETRIES_PER_KEY; retry++) {
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    let errorResult = null;
+                    try {
+                        errorResult = await response.json();
+                    } catch (jsonError) {
+                        console.warn('Não foi possível interpretar a resposta de erro da API Gemini.', jsonError);
+                    }
+                    const errorMessage = (errorResult && errorResult.error && errorResult.error.message) || response.statusText || 'Erro desconhecido.';
+                    console.error('Erro da API Gemini:', errorMessage);
+
+                    const isModelNotFound = response.status === 404 || /model[^]*was not found/i.test(errorMessage || '');
+                    if (isModelNotFound) {
+                        encounteredModelNotFound = true;
+                        shouldTryNextModel = true;
+                        lastError = new Error(errorMessage || `Modelo ${model} indisponível.`);
+                        lastError.code = 'MODEL_NOT_FOUND';
+                        lastError.userMessage = `O modelo ${model} não está disponível no momento.`;
+                        if (modelIndex < candidateModels.length - 1) {
+                            console.info(`Modelo ${model} indisponível. Tentando ${candidateModels[modelIndex + 1]}...`);
+                        }
+                        break;
+                    }
+
+                    if (response.status === 429) {
+                        markGeminiApiKeyAsCoolingDown(GEMINI_API_RATE_LIMIT_COOLDOWN_MINUTES, 'Limite gratuito atingido');
+                        const rateLimitError = new Error('Limite de uso atingido para a chave atual.');
+                        rateLimitError.code = 'RATE_LIMIT';
+                        rateLimitError.userMessage = 'O limite gratuito da chave foi atingido. Aguardamos a liberação automática ou ajuste a chave em “Mais Opções > Gerenciar Chave”.';
+                        lastError = rateLimitError;
+                        break;
+                    }
+
+                    if (response.status === 400 || response.status === 401 || response.status === 403) {
+                        markGeminiApiKeyAsInvalid('Chave inválida ou sem permissão.');
+                        const invalidError = new Error('A chave configurada foi recusada pela API.');
+                        invalidError.code = 'INVALID_KEY';
+                        invalidError.userMessage = 'A chave configurada foi recusada pela API. Revise ou substitua em “Mais Opções > Gerenciar Chave”.';
+                        lastError = invalidError;
+                        break;
+                    }
+
+                    if ((response.status === 500 || response.status === 503) && retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
+                        const delay = Math.pow(2, retry) * 1000 + Math.random() * 500;
+                        console.warn(`API instável (status ${response.status}). Tentando novamente em ${Math.round(delay / 1000)}s.`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+
+                    if (response.status === 500 || response.status === 503) {
+                        markGeminiApiKeyAsCoolingDown(GEMINI_API_SERVER_ERROR_COOLDOWN_MINUTES, 'Instabilidade do serviço');
+                        const serviceError = new Error('Serviço Gemini instável no momento.');
+                        serviceError.code = 'SERVICE_UNAVAILABLE';
+                        serviceError.userMessage = 'A API Gemini está instável. Tente novamente em alguns minutos.';
+                        lastError = serviceError;
+                        break;
+                    }
+
+                    const genericError = new Error(errorMessage);
+                    genericError.code = `HTTP_${response.status}`;
+                    genericError.userMessage = `Erro ${response.status} ao usar a chave configurada. Tente novamente em instantes.`;
+                    lastError = genericError;
                     break;
                 }
 
-                if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 404) {
-                    markGeminiApiKeyAsInvalid('Chave inválida ou sem permissão.');
-                    const invalidError = new Error('A chave configurada foi recusada pela API.');
-                    invalidError.code = 'INVALID_KEY';
-                    invalidError.userMessage = 'A chave configurada foi recusada pela API. Revise ou substitua em “Mais Opções > Gerenciar Chave”.';
-                    lastError = invalidError;
-                    break;
-                }
-
-                if ((response.status === 500 || response.status === 503) && retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
+                const result = await response.json();
+                markGeminiApiKeyAsHealthy({ lastSuccessfulModel: model });
+                console.log(`Chave Gemini respondeu com sucesso usando o modelo ${model}.`);
+                return result;
+            } catch (error) {
+                console.error('Erro de rede ao contactar a API Gemini:', error);
+                if (retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
                     const delay = Math.pow(2, retry) * 1000 + Math.random() * 500;
-                    console.warn(`API instável (status ${response.status}). Tentando novamente em ${Math.round(delay / 1000)}s.`);
+                    console.warn(`Repetindo tentativa em ${Math.round(delay / 1000)}s devido a falha de rede.`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                     continue;
                 }
-
-                if (response.status === 500 || response.status === 503) {
-                    markGeminiApiKeyAsCoolingDown(GEMINI_API_SERVER_ERROR_COOLDOWN_MINUTES, 'Instabilidade do serviço');
-                    const serviceError = new Error('Serviço Gemini instável no momento.');
-                    serviceError.code = 'SERVICE_UNAVAILABLE';
-                    serviceError.userMessage = 'A API Gemini está instável. Tente novamente em alguns minutos.';
-                    lastError = serviceError;
-                    break;
-                }
-
-                const genericError = new Error(errorMessage);
-                genericError.code = `HTTP_${response.status}`;
-                genericError.userMessage = `Erro ${response.status} ao usar a chave configurada. Tente novamente em instantes.`;
-                lastError = genericError;
+                markGeminiApiKeyAsCoolingDown(GEMINI_API_NETWORK_COOLDOWN_MINUTES, 'Falha de rede');
+                const networkError = new Error('Falha de rede ao contactar a API Gemini.');
+                networkError.code = 'NETWORK_ERROR';
+                networkError.userMessage = 'Falha de rede ao contactar a IA. Verifique sua conexão e tente novamente em instantes.';
+                lastError = networkError;
                 break;
             }
+        }
 
-            const result = await response.json();
-            markGeminiApiKeyAsHealthy();
-            console.log('Chave Gemini respondeu com sucesso.');
-            return result;
-        } catch (error) {
-            console.error('Erro de rede ao contactar a API Gemini:', error);
-            if (retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
-                const delay = Math.pow(2, retry) * 1000 + Math.random() * 500;
-                console.warn(`Repetindo tentativa em ${Math.round(delay / 1000)}s devido a falha de rede.`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                continue;
-            }
-            markGeminiApiKeyAsCoolingDown(GEMINI_API_NETWORK_COOLDOWN_MINUTES, 'Falha de rede');
-            const networkError = new Error('Falha de rede ao contactar a API Gemini.');
-            networkError.code = 'NETWORK_ERROR';
-            networkError.userMessage = 'Falha de rede ao contactar a IA. Verifique sua conexão e tente novamente em instantes.';
-            lastError = networkError;
+        if (shouldTryNextModel) {
+            continue;
+        }
+
+        if (lastError) {
             break;
         }
+    }
+
+    if (encounteredModelNotFound && (!lastError || lastError.code === 'MODEL_NOT_FOUND')) {
+        const reason = `Modelos indisponíveis para a chave (${candidateModels.join(', ')}).`;
+        markGeminiApiKeyAsInvalid(reason);
+        const invalidModelError = new Error('Nenhum modelo compatível disponível para a chave configurada.');
+        invalidModelError.code = 'MODEL_NOT_FOUND';
+        invalidModelError.userMessage = 'A chave configurada não possui acesso aos modelos disponíveis. Revise ou substitua em “Mais Opções > Gerenciar Chave”.';
+        throw invalidModelError;
     }
 
     const finalError = lastError || new Error('Não foi possível se comunicar com a API Gemini.');
