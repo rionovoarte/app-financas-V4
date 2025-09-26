@@ -7,13 +7,46 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, onSnapsh
 
 // Variáveis globais do ambiente Canvas (preenchidas em tempo de execução)
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-// Configuração do Firebase injetada dinamicamente pelo servidor de hospedagem
-const firebaseConfig = (() => {
-    if (typeof window === 'undefined' || !window.__FIREBASE_CONFIG__) {
-        throw new Error('Firebase configuration was not provided.');
+
+// Chaves obrigatórias para a configuração do Firebase
+const REQUIRED_FIREBASE_CONFIG_KEYS = [
+    'apiKey',
+    'authDomain',
+    'projectId',
+    'storageBucket',
+    'messagingSenderId',
+    'appId'
+];
+
+let firebaseConfig = null;
+let firebaseConfigError = null;
+
+function refreshFirebaseConfiguration() {
+    if (typeof window === 'undefined') {
+        firebaseConfig = null;
+        firebaseConfigError = 'Firebase configuration is only available in the browser environment.';
+        return;
     }
-    return window.__FIREBASE_CONFIG__;
-})();
+
+    firebaseConfig = window.__FIREBASE_CONFIG__ || null;
+    firebaseConfigError = window.__FIREBASE_CONFIG_ERROR__ || null;
+}
+
+function getMissingFirebaseConfigKeys(config) {
+    return REQUIRED_FIREBASE_CONFIG_KEYS.filter((key) => {
+        if (!config || typeof config !== 'object') {
+            return true;
+        }
+        const value = config[key];
+        if (typeof value === 'string') {
+            return value.trim() === '';
+        }
+        return value === undefined || value === null;
+    });
+}
+
+refreshFirebaseConfiguration();
+
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 // Instâncias do Firebase
@@ -449,6 +482,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     const loginErrorMessage = document.getElementById('login-error-message');
     const appContent = document.getElementById('app-content');
     const bodyEl = document.querySelector('body');
+    const criticalErrorScreen = document.getElementById('critical-error-screen');
+    const criticalErrorMessage = document.getElementById('critical-error-message');
+    const retryInitializationButton = document.getElementById('retry-initialization-button');
+
+    if (retryInitializationButton) {
+        retryInitializationButton.addEventListener('click', () => {
+            window.location.reload();
+        });
+    }
+
+    function showCriticalError(message, { canRetry = false } = {}) {
+        console.error(message);
+        if (criticalErrorMessage) {
+            criticalErrorMessage.textContent = message;
+        }
+        if (criticalErrorScreen) {
+            criticalErrorScreen.classList.remove('hidden');
+        } else {
+            alert(message);
+        }
+
+        if (retryInitializationButton) {
+            if (canRetry) {
+                retryInitializationButton.classList.remove('hidden');
+            } else {
+                retryInitializationButton.classList.add('hidden');
+            }
+        }
+    }
+
+    function hideCriticalError() {
+        if (criticalErrorScreen) {
+            criticalErrorScreen.classList.add('hidden');
+        }
+    }
 
     // Elementos do Modal de Confirmação Genérico
     const confirmationModal = document.getElementById('confirmation-modal');
@@ -1001,7 +1069,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     // --- FIM das Funções de Persistência (Firebase Firestore) ---
 
-    await initializeFirebase();
+    const firebaseReady = await initializeFirebase();
+    if (!firebaseReady) {
+        return;
+    }
     
     // A função loadApiKey agora é disparada pelo onSnapshot dentro de loadAllDataFromFirestore
     // e não precisa mais ser chamada explicitamente aqui ou em openApiKeysModal.
@@ -2473,6 +2544,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- Configuração e Inicialização do Firebase ---
     async function initializeFirebase() {
+        refreshFirebaseConfiguration();
+        const missingKeys = getMissingFirebaseConfigKeys(firebaseConfig);
+
+        if (missingKeys.length > 0) {
+            const message = firebaseConfigError || `Configuração do Firebase ausente ou incompleta. Informe: ${missingKeys.join(', ')}.`;
+            if (loginErrorMessage) {
+                loginErrorMessage.textContent = message;
+                loginErrorMessage.classList.remove('hidden');
+            }
+            showCriticalError(message, { canRetry: false });
+            return false;
+        }
+
         try {
             app = initializeApp(firebaseConfig);
             db = getFirestore(app);
@@ -2490,7 +2574,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await loadAllDataFromFirestore();
                     // Lógica para decidir entre splash e app content
                     if (window.getComputedStyle(splashScreen).display !== 'none') {
-                        showSplashScreen(); 
+                        showSplashScreen();
                     } else {
                         // Se splash estiver oculto (desktop), mostra o app direto
                         appContent.classList.remove('hidden');
@@ -2518,18 +2602,30 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (error.code === 'auth/custom-token-mismatch' || error.code === 'auth/invalid-custom-token') {
                         errorMessage += " Verifique as configurações do Firebase ou gere um novo token.";
                     }
-                    loginErrorMessage.textContent = errorMessage;
-                    loginErrorMessage.classList.remove('hidden');
+                    if (loginErrorMessage) {
+                        loginErrorMessage.textContent = errorMessage;
+                        loginErrorMessage.classList.remove('hidden');
+                    }
                 }
             } else if (!auth.currentUser) {
                  // Não faz nada se não houver token e nenhum usuário. O login será exibido pelo onAuthStateChanged.
                 console.log("Nenhum token inicial e nenhum usuário logado. Aguardando interação.");
             }
 
+            hideCriticalError();
+            if (loginErrorMessage) {
+                loginErrorMessage.classList.add('hidden');
+            }
+            return true;
         } catch (error) {
             console.error("Erro ao inicializar Firebase:", error);
-            loginErrorMessage.textContent = `Erro crítico ao iniciar a aplicação: ${error.message}`;
-            loginErrorMessage.classList.remove('hidden');
+            const message = `Erro crítico ao iniciar a aplicação: ${error.message}`;
+            if (loginErrorMessage) {
+                loginErrorMessage.textContent = message;
+                loginErrorMessage.classList.remove('hidden');
+            }
+            showCriticalError('Não foi possível conectar aos serviços do Firebase. Verifique as credenciais e tente novamente.', { canRetry: true });
+            return false;
         }
     }
 
