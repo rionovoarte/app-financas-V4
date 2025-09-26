@@ -3,7 +3,7 @@
 // Importa os módulos necessários do Firebase
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, writeBatch, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, writeBatch, where, getDocs, deleteField } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Variáveis globais do ambiente Canvas (preenchidas em tempo de execução)
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -36,14 +36,13 @@ let aiConfig = {
     aiPersonality: ""
 };
 
-// Múltiplas chaves de API Gemini (ARRAY)
-let geminiApiKeys = []; 
-let currentGeminiApiKeyIndex = -1; // Índice da última chave de API usada com sucesso
+// Chave única da API Gemini
+let geminiApiKey = '';
 let chatHistory = [];
 let isSendingMessage = false;
 let isGeminiApiReady = false;
 
-// Controle avançado das chaves Gemini
+// Controle avançado da chave Gemini
 const GEMINI_API_KEY_STATUS = {
     AVAILABLE: 'available',
     COOLDOWN: 'cooldown',
@@ -55,7 +54,7 @@ const GEMINI_API_NETWORK_COOLDOWN_MINUTES = 2;
 const GEMINI_API_MAX_RETRIES_PER_KEY = 3;
 const GEMINI_API_KEY_HEALTH_STORAGE_KEY = 'financasClarasGeminiKeyHealth';
 
-let geminiApiKeyHealth = loadGeminiApiKeyHealth();
+let geminiApiKeyStatus = loadGeminiApiKeyStatus();
 let apiKeyStatusListElement = null;
 let scheduleApiKeyUiRefresh = null;
 let hasWarnedAllKeysBlocked = false;
@@ -90,27 +89,37 @@ let aiSuggestedExpensesQueue = [];
 let categoryOptimizationSuggestionsStore = [];
 
 
-function loadGeminiApiKeyHealth() {
+function loadGeminiApiKeyStatus() {
     if (typeof localStorage === 'undefined') {
-        return [];
+        return createApiKeyHealthState('');
     }
     try {
         const stored = localStorage.getItem(GEMINI_API_KEY_HEALTH_STORAGE_KEY);
-        return stored ? JSON.parse(stored) : [];
+        if (!stored) {
+            return createApiKeyHealthState('');
+        }
+        const parsed = JSON.parse(stored);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return createApiKeyHealthState('');
+        }
+        return {
+            ...createApiKeyHealthState(''),
+            ...parsed
+        };
     } catch (error) {
-        console.warn('Não foi possível ler o status das chaves Gemini do armazenamento local.', error);
-        return [];
+        console.warn('Não foi possível ler o status da chave Gemini do armazenamento local.', error);
+        return createApiKeyHealthState('');
     }
 }
 
-function persistGeminiApiKeyHealth() {
+function persistGeminiApiKeyStatus() {
     if (typeof localStorage === 'undefined') {
         return;
     }
     try {
-        localStorage.setItem(GEMINI_API_KEY_HEALTH_STORAGE_KEY, JSON.stringify(geminiApiKeyHealth));
+        localStorage.setItem(GEMINI_API_KEY_HEALTH_STORAGE_KEY, JSON.stringify(geminiApiKeyStatus));
     } catch (error) {
-        console.warn('Não foi possível salvar o status das chaves Gemini no armazenamento local.', error);
+        console.warn('Não foi possível salvar o status da chave Gemini no armazenamento local.', error);
     }
 }
 
@@ -124,29 +133,18 @@ function scheduleNextGeminiKeyAvailabilityCheck() {
         geminiKeyAvailabilityTimer = null;
     }
 
-    const now = Date.now();
-    let nearestDisabledUntil = null;
-
-    geminiApiKeyHealth.forEach(state => {
-        if (!state) {
-            return;
+    const state = geminiApiKeyStatus;
+    if (state && state.status === GEMINI_API_KEY_STATUS.COOLDOWN && state.disabledUntil) {
+        const now = Date.now();
+        if (state.disabledUntil > now) {
+            const delay = Math.max(1000, state.disabledUntil - now + 500);
+            geminiKeyAvailabilityTimer = setTimeout(() => {
+                geminiKeyAvailabilityTimer = null;
+                if (typeof scheduleApiKeyUiRefresh === 'function') {
+                    scheduleApiKeyUiRefresh();
+                }
+            }, delay);
         }
-        const { status, disabledUntil } = state;
-        if (status === GEMINI_API_KEY_STATUS.COOLDOWN && disabledUntil && disabledUntil > now) {
-            nearestDisabledUntil = nearestDisabledUntil === null
-                ? disabledUntil
-                : Math.min(nearestDisabledUntil, disabledUntil);
-        }
-    });
-
-    if (nearestDisabledUntil) {
-        const delay = Math.max(1000, nearestDisabledUntil - now + 500);
-        geminiKeyAvailabilityTimer = setTimeout(() => {
-            geminiKeyAvailabilityTimer = null;
-            if (typeof scheduleApiKeyUiRefresh === 'function') {
-                scheduleApiKeyUiRefresh();
-            }
-        }, delay);
     }
 }
 
@@ -180,101 +178,60 @@ function createApiKeyHealthState(rawKey) {
     };
 }
 
-function ensureGeminiApiKeyHealth(index) {
-    const trimmedKey = (geminiApiKeys[index] || '').trim();
-    const fingerprint = trimmedKey ? fingerprintKey(trimmedKey) : null;
-    const existing = geminiApiKeyHealth[index];
-    if (existing && existing.fingerprint === fingerprint) {
-        return existing;
-    }
-    const newState = createApiKeyHealthState(trimmedKey);
-    geminiApiKeyHealth[index] = newState;
-    return newState;
-}
-
-function syncGeminiApiKeyHealthWithKeys() {
-    geminiApiKeyHealth = geminiApiKeys.map((rawKey, index) => {
-        const trimmedKey = (rawKey || '').trim();
-        if (!trimmedKey) {
-            return createApiKeyHealthState('');
-        }
-        const fingerprint = fingerprintKey(trimmedKey);
-        const existing = geminiApiKeyHealth[index];
-        if (existing && existing.fingerprint === fingerprint) {
-            return { ...existing, fingerprint };
-        }
-        return createApiKeyHealthState(trimmedKey);
-    });
-    if (currentGeminiApiKeyIndex >= geminiApiKeys.length || !geminiApiKeys[currentGeminiApiKeyIndex]?.trim()) {
-        currentGeminiApiKeyIndex = -1;
-    }
-    persistGeminiApiKeyHealth();
-    scheduleNextGeminiKeyAvailabilityCheck();
-    if (typeof scheduleApiKeyUiRefresh === 'function') {
-        scheduleApiKeyUiRefresh();
-    }
-}
-
-function getAvailableGeminiKeyEntries(options = {}) {
+function ensureGeminiApiKeyStatus(options = {}) {
     const { skipUiRefresh = false } = options;
-    const now = Date.now();
-    const availableEntries = [];
+    const trimmedKey = (geminiApiKey || '').trim();
+    const fingerprint = trimmedKey ? fingerprintKey(trimmedKey) : null;
+    const existing = geminiApiKeyStatus;
+
     let stateChanged = false;
 
-    geminiApiKeys.forEach((rawKey, index) => {
-        const trimmedKey = (rawKey || '').trim();
-        if (!trimmedKey) {
-            return;
-        }
+    if (!existing || existing.fingerprint !== fingerprint) {
+        geminiApiKeyStatus = createApiKeyHealthState(trimmedKey);
+        stateChanged = true;
+    }
 
-        let state = geminiApiKeyHealth[index];
-        if (!state || state.fingerprint !== fingerprintKey(trimmedKey)) {
-            state = ensureGeminiApiKeyHealth(index);
-            stateChanged = true;
-        }
-
-        if (state.status === GEMINI_API_KEY_STATUS.COOLDOWN && state.disabledUntil && state.disabledUntil <= now) {
-            geminiApiKeyHealth[index] = {
-                ...state,
+    if (geminiApiKeyStatus.status === GEMINI_API_KEY_STATUS.COOLDOWN && geminiApiKeyStatus.disabledUntil) {
+        if (geminiApiKeyStatus.disabledUntil <= Date.now()) {
+            geminiApiKeyStatus = {
+                ...geminiApiKeyStatus,
                 status: GEMINI_API_KEY_STATUS.AVAILABLE,
                 disabledUntil: null,
                 failureReason: null
             };
-            state = geminiApiKeyHealth[index];
             stateChanged = true;
-        }
-
-        if (state.status === GEMINI_API_KEY_STATUS.AVAILABLE) {
-            availableEntries.push({ key: trimmedKey, index });
-        }
-    });
-
-    if (stateChanged) {
-        persistGeminiApiKeyHealth();
-        if (!skipUiRefresh && typeof scheduleApiKeyUiRefresh === 'function') {
-            scheduleApiKeyUiRefresh();
         }
     }
 
-    scheduleNextGeminiKeyAvailabilityCheck();
+    if (stateChanged) {
+        persistGeminiApiKeyStatus();
+        scheduleNextGeminiKeyAvailabilityCheck();
+        if (!skipUiRefresh && typeof scheduleApiKeyUiRefresh === 'function') {
+            scheduleApiKeyUiRefresh();
+        }
+    } else {
+        scheduleNextGeminiKeyAvailabilityCheck();
+    }
 
-    return availableEntries;
+    return geminiApiKeyStatus;
 }
 
 function hasAvailableGeminiKey(options = {}) {
-    return getAvailableGeminiKeyEntries(options).length > 0;
+    const state = ensureGeminiApiKeyStatus(options);
+    const trimmedKey = (geminiApiKey || '').trim();
+    return !!trimmedKey && state.status === GEMINI_API_KEY_STATUS.AVAILABLE;
 }
 
-function markApiKeyAsHealthy(index) {
-    const state = ensureGeminiApiKeyHealth(index);
-    geminiApiKeyHealth[index] = {
+function markGeminiApiKeyAsHealthy() {
+    const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
+    geminiApiKeyStatus = {
         ...state,
         status: GEMINI_API_KEY_STATUS.AVAILABLE,
         disabledUntil: null,
         failureReason: null,
         failureCount: 0
     };
-    persistGeminiApiKeyHealth();
+    persistGeminiApiKeyStatus();
     hasWarnedAllKeysBlocked = false;
     scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
@@ -282,62 +239,47 @@ function markApiKeyAsHealthy(index) {
     }
 }
 
-function markApiKeyAsCoolingDown(index, minutes, reason) {
-    const state = ensureGeminiApiKeyHealth(index);
+function markGeminiApiKeyAsCoolingDown(minutes, reason) {
+    const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
     const cooldownMinutes = Math.max(1, minutes || 1);
-    geminiApiKeyHealth[index] = {
+    geminiApiKeyStatus = {
         ...state,
         status: GEMINI_API_KEY_STATUS.COOLDOWN,
         disabledUntil: Date.now() + cooldownMinutes * 60 * 1000,
         failureReason: reason || null,
         failureCount: (state.failureCount || 0) + 1
     };
-    persistGeminiApiKeyHealth();
+    persistGeminiApiKeyStatus();
     scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
         scheduleApiKeyUiRefresh();
     }
 }
 
-function markApiKeyAsInvalid(index, reason) {
-    const state = ensureGeminiApiKeyHealth(index);
-    geminiApiKeyHealth[index] = {
+function markGeminiApiKeyAsInvalid(reason) {
+    const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
+    geminiApiKeyStatus = {
         ...state,
         status: GEMINI_API_KEY_STATUS.INVALID,
         disabledUntil: null,
         failureReason: reason || 'Chave inválida ou sem permissão.',
         failureCount: (state.failureCount || 0) + 1
     };
-    persistGeminiApiKeyHealth();
+    persistGeminiApiKeyStatus();
     scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
         scheduleApiKeyUiRefresh();
     }
 }
 
-function resetApiKeyHealth(includeInvalid = true) {
-    geminiApiKeyHealth = geminiApiKeys.map((rawKey, index) => {
-        const trimmedKey = (rawKey || '').trim();
-        if (!trimmedKey) {
-            return createApiKeyHealthState('');
-        }
-        const fingerprint = fingerprintKey(trimmedKey);
-        const existing = geminiApiKeyHealth[index];
-        if (existing && existing.fingerprint === fingerprint) {
-            if (existing.status === GEMINI_API_KEY_STATUS.INVALID && !includeInvalid) {
-                return existing;
-            }
-            return {
-                ...existing,
-                status: GEMINI_API_KEY_STATUS.AVAILABLE,
-                disabledUntil: null,
-                failureReason: null,
-                failureCount: 0
-            };
-        }
-        return createApiKeyHealthState(trimmedKey);
-    });
-    persistGeminiApiKeyHealth();
+function resetGeminiApiKeyHealth(includeInvalid = true) {
+    const trimmedKey = (geminiApiKey || '').trim();
+    const fingerprint = trimmedKey ? fingerprintKey(trimmedKey) : null;
+    if (!includeInvalid && geminiApiKeyStatus && geminiApiKeyStatus.status === GEMINI_API_KEY_STATUS.INVALID && geminiApiKeyStatus.fingerprint === fingerprint) {
+        return;
+    }
+    geminiApiKeyStatus = createApiKeyHealthState(trimmedKey);
+    persistGeminiApiKeyStatus();
     hasWarnedAllKeysBlocked = false;
     scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
@@ -386,60 +328,53 @@ function renderApiKeyStatusList() {
         return;
     }
 
-    const configuredKeys = geminiApiKeys
-        .map((rawKey, index) => ({ key: (rawKey || '').trim(), index }))
-        .filter(entry => entry.key);
-
-    if (configuredKeys.length === 0) {
+    const trimmedKey = (geminiApiKey || '').trim();
+    if (!trimmedKey) {
         apiKeyStatusListElement.innerHTML = '';
         apiKeyStatusListElement.classList.add('hidden');
         return;
     }
 
-    const availableCount = getAvailableGeminiKeyEntries({ skipUiRefresh: true }).length;
+    const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
+    let statusTitle = 'Ativa';
+    let statusClass = 'text-green-600';
+    let extraInfo = '';
 
-    const itemsHtml = configuredKeys.map(({ key, index }) => {
-        const state = ensureGeminiApiKeyHealth(index);
-        let statusTitle = 'Ativa';
-        let statusClass = 'text-green-600';
-        let extraInfo = '';
-
-        if (state.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
-            statusTitle = 'Em pausa';
-            statusClass = 'text-amber-600';
-            extraInfo = formatCooldownMessage(state.disabledUntil);
-            if (state.failureReason) {
-                extraInfo += ` · ${state.failureReason}`;
-            }
-        } else if (state.status === GEMINI_API_KEY_STATUS.INVALID) {
-            statusTitle = 'Chave bloqueada';
-            statusClass = 'text-red-600';
-            extraInfo = state.failureReason || 'Chave inválida ou sem permissão.';
-        } else if (state.failureReason) {
-            extraInfo = state.failureReason;
+    if (state.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
+        statusTitle = 'Em pausa';
+        statusClass = 'text-amber-600';
+        extraInfo = formatCooldownMessage(state.disabledUntil);
+        if (state.failureReason) {
+            extraInfo += ` · ${state.failureReason}`;
         }
+    } else if (state.status === GEMINI_API_KEY_STATUS.INVALID) {
+        statusTitle = 'Bloqueada';
+        statusClass = 'text-red-600';
+        extraInfo = state.failureReason || 'Chave inválida ou sem permissão.';
+    } else if (state.failureReason) {
+        extraInfo = state.failureReason;
+    }
 
-        const extraInfoHtml = extraInfo
-            ? `<p class="text-[0.7rem] text-gray-500 leading-snug">${extraInfo}</p>`
-            : '';
+    const extraInfoHtml = extraInfo
+        ? `<p class="text-[0.7rem] text-gray-500 leading-snug">${extraInfo}</p>`
+        : '';
 
-        return `
-            <div class="pt-2 first:pt-0 first:border-t-0 border-t border-gray-200 flex items-start justify-between gap-3">
-                <div>
-                    <p class="text-sm font-semibold text-gray-700">Chave ${index + 1}</p>
-                    <p class="text-xs text-gray-500 break-all">${maskApiKey(key)}</p>
-                </div>
-                <div class="text-right">
-                    <p class="text-xs font-semibold ${statusClass}">${statusTitle}</p>
-                    ${extraInfoHtml}
-                </div>
-            </div>
-        `;
-    }).join('');
+    const availabilityMessage = hasAvailableGeminiKey({ skipUiRefresh: true })
+        ? 'Disponível agora'
+        : 'Indisponível no momento';
 
     apiKeyStatusListElement.innerHTML = `
-        <p class="text-xs text-gray-500">Disponíveis agora: ${availableCount} de ${configuredKeys.length}</p>
-        ${itemsHtml}
+        <p class="text-xs text-gray-500">${availabilityMessage}</p>
+        <div class="pt-2 first:pt-0 first:border-t-0 border-t border-gray-200 flex items-start justify-between gap-3">
+            <div>
+                <p class="text-sm font-semibold text-gray-700">Chave configurada</p>
+                <p class="text-xs text-gray-500 break-all">${maskApiKey(trimmedKey)}</p>
+            </div>
+            <div class="text-right">
+                <p class="text-xs font-semibold ${statusClass}">${statusTitle}</p>
+                ${extraInfoHtml}
+            </div>
+        </div>
     `;
     apiKeyStatusListElement.classList.remove('hidden');
 }
@@ -706,130 +641,123 @@ function markNotificationAsSentToday() {
  * @param {number} attemptIndex - O índice da chave a ser tentada.
  * @param {number} retryCount - O número de tentativas já feitas para esta chave.
  * @returns {Promise<object>} - O resultado da API em caso de sucesso.
- * @throws {Error} - Se todas as chaves falharem.
+ * @throws {Error} - Se a chave falhar repetidamente.
  */
 async function tryNextApiKey(payload) {
-    const availableEntries = getAvailableGeminiKeyEntries();
-    if (availableEntries.length === 0) {
-        const error = new Error('Nenhuma chave de API disponível no momento. Adicione ou libere novas chaves para continuar.');
+    const trimmedKey = (geminiApiKey || '').trim();
+    if (!trimmedKey) {
+        const error = new Error('Nenhuma chave de API configurada.');
         error.code = 'NO_AVAILABLE_KEYS';
-        error.userMessage = 'Todas as chaves de IA estão pausadas ou inválidas. Abra “Mais Opções > Gerenciar Chaves” para revisar, liberar ou incluir novas chaves.';
+        error.userMessage = 'Configure a sua chave do Gemini em “Mais Opções > Gerenciar Chave” para usar o assistente.';
         throw error;
     }
 
-    let lastError = null;
-
-    let orderedEntries = availableEntries;
-    if (availableEntries.length > 1 && currentGeminiApiKeyIndex >= 0) {
-        const lastUsedPosition = availableEntries.findIndex(entry => entry.index === currentGeminiApiKeyIndex);
-        if (lastUsedPosition >= 0) {
-            const rotationStart = (lastUsedPosition + 1) % availableEntries.length;
-            orderedEntries = availableEntries.slice(rotationStart).concat(availableEntries.slice(0, rotationStart));
+    if (!hasAvailableGeminiKey()) {
+        const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
+        let message = 'A chave de IA está indisponível no momento.';
+        if (state.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
+            message = 'A chave de IA está em pausa temporária. Aguarde alguns minutos ou ajuste em “Mais Opções > Gerenciar Chave”.';
+        } else if (state.status === GEMINI_API_KEY_STATUS.INVALID) {
+            message = 'A chave de IA foi marcada como inválida. Revise ou substitua em “Mais Opções > Gerenciar Chave”.';
         }
+        const error = new Error(message);
+        error.code = 'NO_AVAILABLE_KEYS';
+        error.userMessage = message;
+        throw error;
     }
 
-    for (let entryIndex = 0; entryIndex < orderedEntries.length; entryIndex++) {
-        const { key: apiKey, index: originalIndex } = orderedEntries[entryIndex];
-        const model = payload.generationConfig && payload.generationConfig.response_mime_type === "application/json"
-            ? "gemini-1.5-flash-latest"
-            : "gemini-1.5-flash-latest";
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const model = payload.generationConfig && payload.generationConfig.response_mime_type === "application/json"
+        ? "gemini-1.5-flash-latest"
+        : "gemini-1.5-flash-latest";
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${trimmedKey}`;
 
-        console.log(`Tentando API com a chave ${originalIndex + 1} (posição original) usando o modelo ${model}.`);
+    console.log(`Tentando API Gemini com a chave configurada usando o modelo ${model}.`);
 
-        for (let retry = 0; retry < GEMINI_API_MAX_RETRIES_PER_KEY; retry++) {
-            try {
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+    let lastError = null;
 
-                if (!response.ok) {
-                    let errorResult = null;
-                    try {
-                        errorResult = await response.json();
-                    } catch (jsonError) {
-                        console.warn('Não foi possível interpretar a resposta de erro da API Gemini.', jsonError);
-                    }
-                    const errorMessage = (errorResult && errorResult.error && errorResult.error.message) || response.statusText || 'Erro desconhecido.';
-                    console.error(`Erro da API com a chave ${originalIndex + 1}:`, errorMessage);
+    for (let retry = 0; retry < GEMINI_API_MAX_RETRIES_PER_KEY; retry++) {
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
 
-                    if (response.status === 429) {
-                        markApiKeyAsCoolingDown(originalIndex, GEMINI_API_RATE_LIMIT_COOLDOWN_MINUTES, 'Limite gratuito atingido');
-                        const rateLimitError = new Error(`Limite de uso atingido na chave ${originalIndex + 1}.`);
-                        rateLimitError.code = 'RATE_LIMIT';
-                        rateLimitError.userMessage = 'O limite gratuito da chave foi atingido. A chave ficará pausada por um tempo e tentaremos outras automaticamente.';
-                        lastError = rateLimitError;
-                        break; // passa para a próxima chave disponível
-                    }
+            if (!response.ok) {
+                let errorResult = null;
+                try {
+                    errorResult = await response.json();
+                } catch (jsonError) {
+                    console.warn('Não foi possível interpretar a resposta de erro da API Gemini.', jsonError);
+                }
+                const errorMessage = (errorResult && errorResult.error && errorResult.error.message) || response.statusText || 'Erro desconhecido.';
+                console.error('Erro da API Gemini:', errorMessage);
 
-                    if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 404) {
-                        markApiKeyAsInvalid(originalIndex, 'Chave inválida ou sem permissão.');
-                        const invalidError = new Error(`Chave ${originalIndex + 1} inválida ou sem permissão.`);
-                        invalidError.code = 'INVALID_KEY';
-                        invalidError.userMessage = 'Uma das chaves foi recusada pela API. Revise ou substitua as chaves em “Mais Opções > Gerenciar Chaves”.';
-                        lastError = invalidError;
-                        break;
-                    }
-
-                    if ((response.status === 500 || response.status === 503) && retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
-                        const delay = Math.pow(2, retry) * 1000 + Math.random() * 500;
-                        console.warn(`API instável (status ${response.status}). Tentando novamente a mesma chave em ${Math.round(delay / 1000)}s.`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        continue;
-                    }
-
-                    if (response.status === 500 || response.status === 503) {
-                        markApiKeyAsCoolingDown(originalIndex, GEMINI_API_SERVER_ERROR_COOLDOWN_MINUTES, 'Instabilidade do serviço');
-                        const serviceError = new Error('Serviço Gemini instável no momento.');
-                        serviceError.code = 'SERVICE_UNAVAILABLE';
-                        serviceError.userMessage = 'A API Gemini está instável. Tentaremos outra chave ou aguarde alguns minutos.';
-                        lastError = serviceError;
-                        break;
-                    }
-
-                    const genericError = new Error(errorMessage);
-                    genericError.code = `HTTP_${response.status}`;
-                    genericError.userMessage = `Erro ${response.status} ao usar a chave atual. Tentaremos outra chave disponível.`;
-                    lastError = genericError;
+                if (response.status === 429) {
+                    markGeminiApiKeyAsCoolingDown(GEMINI_API_RATE_LIMIT_COOLDOWN_MINUTES, 'Limite gratuito atingido');
+                    const rateLimitError = new Error('Limite de uso atingido para a chave atual.');
+                    rateLimitError.code = 'RATE_LIMIT';
+                    rateLimitError.userMessage = 'O limite gratuito da chave foi atingido. Aguardamos a liberação automática ou ajuste a chave em “Mais Opções > Gerenciar Chave”.';
+                    lastError = rateLimitError;
                     break;
                 }
 
-                const result = await response.json();
-                currentGeminiApiKeyIndex = originalIndex;
-                markApiKeyAsHealthy(originalIndex);
-                console.log(`Chave ${originalIndex + 1} respondeu com sucesso.`);
-                return result;
-            } catch (error) {
-                console.error(`Erro de rede com a chave ${originalIndex + 1}:`, error);
-                if (retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
+                if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 404) {
+                    markGeminiApiKeyAsInvalid('Chave inválida ou sem permissão.');
+                    const invalidError = new Error('A chave configurada foi recusada pela API.');
+                    invalidError.code = 'INVALID_KEY';
+                    invalidError.userMessage = 'A chave configurada foi recusada pela API. Revise ou substitua em “Mais Opções > Gerenciar Chave”.';
+                    lastError = invalidError;
+                    break;
+                }
+
+                if ((response.status === 500 || response.status === 503) && retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
                     const delay = Math.pow(2, retry) * 1000 + Math.random() * 500;
-                    console.warn(`Repetindo tentativa com a mesma chave em ${Math.round(delay / 1000)}s devido a falha de rede.`);
+                    console.warn(`API instável (status ${response.status}). Tentando novamente em ${Math.round(delay / 1000)}s.`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                     continue;
                 }
-                markApiKeyAsCoolingDown(originalIndex, GEMINI_API_NETWORK_COOLDOWN_MINUTES, 'Falha de rede');
-                const networkError = new Error('Falha de rede ao contactar a API Gemini.');
-                networkError.code = 'NETWORK_ERROR';
-                networkError.userMessage = 'Falha de rede ao contactar a IA. Tentaremos outra chave ou tente novamente em instantes.';
-                lastError = networkError;
+
+                if (response.status === 500 || response.status === 503) {
+                    markGeminiApiKeyAsCoolingDown(GEMINI_API_SERVER_ERROR_COOLDOWN_MINUTES, 'Instabilidade do serviço');
+                    const serviceError = new Error('Serviço Gemini instável no momento.');
+                    serviceError.code = 'SERVICE_UNAVAILABLE';
+                    serviceError.userMessage = 'A API Gemini está instável. Tente novamente em alguns minutos.';
+                    lastError = serviceError;
+                    break;
+                }
+
+                const genericError = new Error(errorMessage);
+                genericError.code = `HTTP_${response.status}`;
+                genericError.userMessage = `Erro ${response.status} ao usar a chave configurada. Tente novamente em instantes.`;
+                lastError = genericError;
                 break;
             }
-        }
-    }
 
-    const stillAvailable = getAvailableGeminiKeyEntries({ skipUiRefresh: true });
-    if (stillAvailable.length === 0) {
-        const exhaustedError = new Error('Todas as chaves de API estão indisponíveis no momento.');
-        exhaustedError.code = 'NO_AVAILABLE_KEYS';
-        exhaustedError.userMessage = 'Todas as chaves de IA ficaram temporariamente indisponíveis. Revise suas chaves ou aguarde a liberação automática.';
-        throw exhaustedError;
+            const result = await response.json();
+            markGeminiApiKeyAsHealthy();
+            console.log('Chave Gemini respondeu com sucesso.');
+            return result;
+        } catch (error) {
+            console.error('Erro de rede ao contactar a API Gemini:', error);
+            if (retry < GEMINI_API_MAX_RETRIES_PER_KEY - 1) {
+                const delay = Math.pow(2, retry) * 1000 + Math.random() * 500;
+                console.warn(`Repetindo tentativa em ${Math.round(delay / 1000)}s devido a falha de rede.`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+            markGeminiApiKeyAsCoolingDown(GEMINI_API_NETWORK_COOLDOWN_MINUTES, 'Falha de rede');
+            const networkError = new Error('Falha de rede ao contactar a API Gemini.');
+            networkError.code = 'NETWORK_ERROR';
+            networkError.userMessage = 'Falha de rede ao contactar a IA. Verifique sua conexão e tente novamente em instantes.';
+            lastError = networkError;
+            break;
+        }
     }
 
     const finalError = lastError || new Error('Não foi possível se comunicar com a API Gemini.');
     if (!finalError.userMessage) {
-        finalError.userMessage = 'Não foi possível se comunicar com a API Gemini. Verifique suas chaves ou tente novamente em alguns minutos.';
+        finalError.userMessage = 'Não foi possível se comunicar com a API Gemini. Verifique a chave configurada ou tente novamente em alguns minutos.';
     }
     throw finalError;
 }
@@ -849,7 +777,7 @@ async function checkAndSendDailyNotification() {
 
     // 2. Verifica se a API de IA está pronta
     if (!hasAvailableGeminiKey({ skipUiRefresh: true })) {
-        console.log("Nenhuma chave de IA disponível para gerar a notificação.");
+        console.log("A chave de IA está indisponível para gerar a notificação.");
         return;
     }
     
@@ -941,8 +869,8 @@ async function checkAndSendDailyNotification() {
 async function sendTestNotification() {
     // 1. Verifica se a API de IA está pronta
     if (!hasAvailableGeminiKey({ skipUiRefresh: true })) {
-        showToast("Nenhuma chave de IA disponível. Configure ou libere suas chaves de API.", "error");
-        console.log("Sem chaves de IA disponíveis. Abortando notificação de teste.");
+        showToast("A chave de IA está indisponível. Configure ou ajuste sua chave de API.", "error");
+        console.log("Chave de IA indisponível. Abortando notificação de teste.");
         return;
     }
     
@@ -1223,17 +1151,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const budgetOptimizationText = document.getElementById('budget-optimization-text');
 
 
-    // Elementos do Modal de Chave de API (ATUALIZADO PARA MÚLTIPLAS CHAVES)
+    // Elementos do Modal de Chave de API (ATUALIZADO PARA CHAVE ÚNICA)
     const apiManagementLink = document.querySelector('[data-page="api-management"]');
     const apiKeysModal = document.getElementById('api-keys-modal');
     const closeApiKeysModalButton = document.getElementById('close-api-keys-modal');
-    const modalApiKeyInputs = [ // Array de inputs para as 5 chaves
-        document.getElementById('modal-api-key-1'),
-        document.getElementById('modal-api-key-2'),
-        document.getElementById('modal-api-key-3'),
-        document.getElementById('modal-api-key-4'),
-        document.getElementById('modal-api-key-5')
-    ];
+    const modalApiKeyInput = document.getElementById('modal-api-key');
     const saveApiKeysModalButton = document.getElementById('save-api-keys-modal-button');
     const apiModalStatusMessageDiv = document.getElementById('api-modal-status-message');
     const apiModalMessageText = document.getElementById('api-modal-message-text');
@@ -1356,32 +1278,61 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.error("Erro ao carregar Orçamentos do Firestore:", error);
         });
 
-        // Listener para Chaves de API Gemini (ARRAY) - NOVO
-        onSnapshot(getUserDocumentRef('settings', 'geminiApiKeys'), (docSnap) => {
-            if (docSnap.exists() && docSnap.data().keys && Array.isArray(docSnap.data().keys)) {
-                geminiApiKeys = docSnap.data().keys;
-                // Popula os campos do modal com as chaves salvas
-                modalApiKeyInputs.forEach((input, index) => {
-                    input.value = geminiApiKeys[index] || '';
-                });
-                updateApiModalStatus("Chaves de API carregadas.", "info");
-                syncGeminiApiKeyHealthWithKeys();
-                console.log("Chaves de API Gemini carregadas do Firestore.");
+        // Listener para Chave de API Gemini (compatível com dados legados)
+        onSnapshot(getUserDocumentRef('settings', 'geminiApiKeys'), async (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data() || {};
+                let newKey = '';
+                let shouldClearLegacyArray = false;
+
+                if (typeof data.key === 'string') {
+                    newKey = data.key;
+                } else if (Array.isArray(data.keys)) {
+                    newKey = data.keys.find(k => k && k.trim()) || '';
+                    shouldClearLegacyArray = true;
+                }
+
+                geminiApiKey = (newKey || '').trim();
+                if (modalApiKeyInput) {
+                    modalApiKeyInput.value = geminiApiKey;
+                }
+
+                ensureGeminiApiKeyStatus();
+                if (shouldClearLegacyArray) {
+                    try {
+                        const apiKeyRef = getUserDocumentRef('settings', 'geminiApiKeys');
+                        if (apiKeyRef) {
+                            await setDoc(apiKeyRef, { key: geminiApiKey, keys: deleteField() }, { merge: true });
+                        }
+                    } catch (cleanupError) {
+                        console.warn('Não foi possível atualizar o formato da chave de API no Firestore.', cleanupError);
+                    }
+                }
+
+                if (geminiApiKey) {
+                    updateApiModalStatus("Chave de API carregada.", "info");
+                    console.log("Chave de API Gemini carregada do Firestore.");
+                } else {
+                    updateApiModalStatus("Nenhuma chave de API salva ainda. Por favor, insira e salve.", "info");
+                    console.log("Chave de API Gemini vazia no Firestore.");
+                }
             } else {
-                geminiApiKeys = [];
-                geminiApiKeyHealth = [];
-                persistGeminiApiKeyHealth();
-                modalApiKeyInputs.forEach(input => input.value = ''); // Limpa os campos
+                geminiApiKey = '';
+                geminiApiKeyStatus = createApiKeyHealthState('');
+                persistGeminiApiKeyStatus();
+                if (modalApiKeyInput) {
+                    modalApiKeyInput.value = '';
+                }
                 updateApiModalStatus("Nenhuma chave de API salva ainda. Por favor, insira e salve.", "info");
-                console.log("Chaves de API Gemini não encontradas no Firestore.");
+                console.log("Chave de API Gemini não encontrada no Firestore.");
             }
             isGeminiApiReady = hasAvailableGeminiKey({ skipUiRefresh: true });
             renderApiKeyStatusList();
             updateChatUIState();
         }, (error) => {
-            console.error("Erro ao carregar Chaves de API Gemini do Firestore:", error);
-            geminiApiKeys = [];
-            updateApiModalStatus(`Erro ao carregar chaves de API: ${error.message}`, "error");
+            console.error("Erro ao carregar Chave de API Gemini do Firestore:", error);
+            geminiApiKey = '';
+            updateApiModalStatus(`Erro ao carregar chave de API: ${error.message}`, "error");
             isGeminiApiReady = false;
             renderApiKeyStatusList();
             updateChatUIState();
@@ -1547,35 +1498,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Salva as chaves da API Gemini no Firestore (ARRAY) - ATUALIZADO
+    // Salva a chave da API Gemini no Firestore
     async function saveApiKeys() {
-        if (!isAuthReady || !userId) { 
-            updateApiModalStatus("Erro: Autenticação não pronta para salvar as chaves de API.", "error");
-            return; 
+        if (!isAuthReady || !userId) {
+            updateApiModalStatus("Erro: Autenticação não pronta para salvar a chave de API.", "error");
+            return;
         }
-        const keysToSave = modalApiKeyInputs.map(input => input.value.trim());
-        
-        // Validação simples: pelo menos uma chave deve ser preenchida
-        if (keysToSave.every(key => key === '')) {
-            updateApiModalStatus("Por favor, insira pelo menos uma chave de API válida.", "error");
+        const keyToSave = (modalApiKeyInput ? modalApiKeyInput.value : '').trim();
+
+        if (keyToSave === '') {
+            updateApiModalStatus("Por favor, insira uma chave de API válida.", "error");
             return;
         }
 
         try {
             const apiKeyRef = getUserDocumentRef('settings', 'geminiApiKeys');
             if (apiKeyRef) {
-                await setDoc(apiKeyRef, { keys: keysToSave });
-                geminiApiKeys = keysToSave; // Atualiza o array local
-                syncGeminiApiKeyHealthWithKeys();
-                updateApiModalStatus("Chaves de API salvas com sucesso!", "success");
+                await setDoc(apiKeyRef, { key: keyToSave, keys: deleteField() }, { merge: true });
+                geminiApiKey = keyToSave;
+                ensureGeminiApiKeyStatus();
+                updateApiModalStatus("Chave de API salva com sucesso!", "success");
                 isGeminiApiReady = hasAvailableGeminiKey({ skipUiRefresh: true });
                 renderApiKeyStatusList();
                 updateChatUIState();
-                console.log("Chaves de API Gemini salvas no Firestore.");
+                console.log("Chave de API Gemini salva no Firestore.");
             }
         } catch (error) {
-            console.error("Erro ao salvar Chaves de API Gemini no Firestore:", error);
-            updateApiModalStatus(`Erro ao salvar chaves de API: ${error.message}`, "error");
+            console.error("Erro ao salvar a chave de API Gemini no Firestore:", error);
+            updateApiModalStatus(`Erro ao salvar chave de API: ${error.message}`, "error");
         }
     }
     // --- FIM das Funções de Persistência (Firebase Firestore) ---
@@ -2712,27 +2662,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!activeApiKeyIndicator) {
             return;
         }
-        const configuredKeys = geminiApiKeys.filter(key => key && key.trim() !== '');
-        if (configuredKeys.length === 0) {
-            activeApiKeyIndicator.textContent = '';
-            activeApiKeyIndicator.classList.add('hidden');
+
+        const trimmedKey = (geminiApiKey || '').trim();
+        if (!trimmedKey) {
+            activeApiKeyIndicator.textContent = 'Configure sua chave do Gemini';
+            activeApiKeyIndicator.classList.remove('hidden');
             return;
         }
 
-        const availableEntries = getAvailableGeminiKeyEntries({ skipUiRefresh: true });
-        const activeIndexDisplay = currentGeminiApiKeyIndex >= 0
-            ? Math.min(currentGeminiApiKeyIndex + 1, configuredKeys.length)
-            : null;
+        const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
+        let message = 'Chave do Gemini pronta';
 
-        if (availableEntries.length === 0) {
-            activeApiKeyIndicator.textContent = `Chaves pausadas (${configuredKeys.length} configuradas)`;
-        } else {
-            if (activeIndexDisplay !== null) {
-                activeApiKeyIndicator.textContent = `Chave ativa: ${activeIndexDisplay}/${configuredKeys.length} · Disponíveis: ${availableEntries.length}`;
-            } else {
-                activeApiKeyIndicator.textContent = `Chaves disponíveis: ${availableEntries.length}/${configuredKeys.length}`;
-            }
+        if (state.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
+            message = `Chave em pausa (${formatCooldownMessage(state.disabledUntil)})`;
+        } else if (state.status === GEMINI_API_KEY_STATUS.INVALID) {
+            message = 'Chave inválida — ajuste em “Gerenciar Chave”';
         }
+
+        activeApiKeyIndicator.textContent = message;
         activeApiKeyIndicator.classList.remove('hidden');
     }
 
@@ -2767,9 +2714,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (userMessage.trim() === "") return;
 
         if (!hasAvailableGeminiKey({ skipUiRefresh: true })) {
+            const state = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
+            let message = 'A chave de IA está indisponível no momento. Abra "Mais Opções > Gerenciar Chave" para ajustar ou aguarde alguns minutos.';
+            if (state.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
+                message = 'A chave de IA está em pausa temporária. Aguarde ou ajuste em "Mais Opções > Gerenciar Chave".';
+            } else if (state.status === GEMINI_API_KEY_STATUS.INVALID) {
+                message = 'A chave de IA foi marcada como inválida. Atualize-a em "Mais Opções > Gerenciar Chave".';
+            }
             appendMessage(
                 "ai",
-                'Todas as chaves de IA estão pausadas ou inválidas. Abra "Mais Opções > Gerenciar Chaves" para liberar ou adicionar novas chaves.',
+                message,
                 "error"
             );
             renderApiKeyStatusList();
@@ -2865,7 +2819,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         `;
 
         if (!hasAvailableGeminiKey({ skipUiRefresh: true })) {
-            insightsContentArea.innerHTML = '<p class="text-red-500">Todas as chaves da IA estão pausadas ou inválidas. Revise-as em "Mais Opções &gt; Gerenciar Chaves".</p>';
+            insightsContentArea.innerHTML = '<p class="text-red-500">A chave da IA está pausada ou inválida. Revise-a em "Mais Opções &gt; Gerenciar Chave".</p>';
             renderApiKeyStatusList();
             updateChatUIState();
             return;
@@ -2936,7 +2890,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         budgetOptimizationLoadingIndicator.classList.remove('hidden');
 
         if (!hasAvailableGeminiKey({ skipUiRefresh: true })) {
-            budgetOptimizationText.innerHTML = '<p class="text-red-500">Todas as chaves da IA estão pausadas ou inválidas. Revise-as em "Mais Opções &gt; Gerenciar Chaves".</p>';
+            budgetOptimizationText.innerHTML = '<p class="text-red-500">A chave da IA está pausada ou inválida. Revise-a em "Mais Opções &gt; Gerenciar Chave".</p>';
             budgetOptimizationLoadingIndicator.classList.add('hidden');
             renderApiKeyStatusList();
             updateChatUIState();
@@ -3016,8 +2970,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Funções do Modal de Chave de API ---
     function openApiKeysModal() {
         apiKeysModal.classList.add('active');
-        // As chaves serão carregadas automaticamente pelo onSnapshot em loadAllDataFromFirestore
-        // e os modalApiKeyInputs.value serão atualizados por ele.
+        // A chave será carregada automaticamente pelo onSnapshot em loadAllDataFromFirestore
+        // e o campo modalApiKeyInput será atualizado por ele.
     }
 
     function closeApiKeysModal() {
@@ -3045,8 +2999,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (resetApiKeyStatusButton) {
         resetApiKeyStatusButton.addEventListener('click', () => {
-            resetApiKeyHealth(true);
-            updateApiModalStatus('Chaves liberadas. Se o limite continuar, adicione novas chaves ou aguarde alguns minutos.', 'success');
+            resetGeminiApiKeyHealth(true);
+            updateApiModalStatus('Chave liberada. Se o limite continuar, ajuste a chave ou aguarde alguns minutos.', 'success');
             renderApiKeyStatusList();
             updateChatUIState();
         });
@@ -3229,10 +3183,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Função para atualizar o estado da UI do chat (habilitado/desabilitado)
     function updateChatUIState() {
-        const configuredKeys = geminiApiKeys.filter(key => key && key.trim() !== '');
-        const availableEntries = getAvailableGeminiKeyEntries({ skipUiRefresh: true });
-        const hasConfiguredKey = configuredKeys.length > 0;
-        const hasAvailableKeyNow = availableEntries.length > 0;
+        const trimmedKey = (geminiApiKey || '').trim();
+        const hasConfiguredKey = !!trimmedKey;
+        const keyState = ensureGeminiApiKeyStatus({ skipUiRefresh: true });
+        const hasAvailableKeyNow = hasAvailableGeminiKey({ skipUiRefresh: true });
 
         isGeminiApiReady = hasAvailableKeyNow;
 
@@ -3257,10 +3211,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } else {
             if (chatInput) {
+                let placeholder = 'Configure sua chave em "Mais Opções > Gerenciar Chave".';
+                if (hasConfiguredKey) {
+                    if (keyState.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
+                        placeholder = 'A chave está em pausa temporária. Aguarde ou ajuste em "Gerenciar Chave".';
+                    } else if (keyState.status === GEMINI_API_KEY_STATUS.INVALID) {
+                        placeholder = 'A chave foi recusada. Ajuste em "Gerenciar Chave".';
+                    }
+                }
                 chatInput.disabled = true;
-                chatInput.placeholder = hasConfiguredKey
-                    ? 'Todas as chaves estão em pausa. Ajuste em "Mais Opções > Gerenciar Chaves".'
-                    : 'Assistente não configurado...';
+                chatInput.placeholder = placeholder;
             }
             if (sendButton) {
                 sendButton.disabled = true;
@@ -3270,7 +3230,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (hasConfiguredKey && !hasWarnedAllKeysBlocked) {
-                appendMessage('ai', 'Todas as chaves de IA ficaram temporariamente indisponíveis. Abra "Mais Opções > Gerenciar Chaves" para liberar ou incluir novas chaves.', 'error');
+                let warningMessage = 'A chave de IA está temporariamente indisponível. Ajuste em "Mais Opções > Gerenciar Chave" ou aguarde alguns minutos.';
+                if (keyState.status === GEMINI_API_KEY_STATUS.COOLDOWN) {
+                    warningMessage = 'A chave de IA entrou em pausa automática. Aguarde a liberação ou ajuste em "Gerenciar Chave".';
+                } else if (keyState.status === GEMINI_API_KEY_STATUS.INVALID) {
+                    warningMessage = 'A chave de IA foi marcada como inválida. Atualize-a em "Mais Opções > Gerenciar Chave".';
+                }
+                appendMessage('ai', warningMessage, 'error');
                 hasWarnedAllKeysBlocked = true;
             } else if (!hasConfiguredKey) {
                 hasWarnedAllKeysBlocked = false;
@@ -3926,7 +3892,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         categoryOptimizationLoadingIndicator.classList.remove('hidden');
 
         if (!hasAvailableGeminiKey({ skipUiRefresh: true })) {
-            categoryOptimizationSuggestions.innerHTML = '<p class="text-red-500">Todas as chaves da IA estão pausadas ou inválidas. Revise-as em "Mais Opções &gt; Gerenciar Chaves".</p>';
+            categoryOptimizationSuggestions.innerHTML = '<p class="text-red-500">A chave da IA está pausada ou inválida. Revise-a em "Mais Opções &gt; Gerenciar Chave".</p>';
             categoryOptimizationLoadingIndicator.classList.add('hidden');
             renderApiKeyStatusList();
             updateChatUIState();
@@ -4262,7 +4228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (!hasAvailableGeminiKey({ skipUiRefresh: true })) {
-            showToast("Todas as chaves da IA estão pausadas ou inválidas. Revise-as em 'Mais Opções > Gerenciar Chaves'.", "error");
+            showToast("A chave da IA está pausada ou inválida. Revise-a em 'Mais Opções > Gerenciar Chave'.", "error");
             renderApiKeyStatusList();
             updateChatUIState();
             return;
