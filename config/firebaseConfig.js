@@ -1,6 +1,6 @@
 (function injectFirebaseConfig() {
-  const REQUIRED_KEYS = [
-      apiKey: "AIzaSyBEuFW_VQEx_smJUOxCsF0Jug_lnzUA2aw",
+  const firebaseConfig = {
+  apiKey: "AIzaSyBEuFW_VQEx_smJUOxCsF0Jug_lnzUA2aw",
   authDomain: "offline-d2e68.firebaseapp.com",
   projectId: "offline-d2e68",
   storageBucket: "offline-d2e68.firebasestorage.app",
