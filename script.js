@@ -1600,7 +1600,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         `<span class="transaction-item-installment">(Parc. ${transaction.installmentNumber}/${transaction.totalInstallments})</span>` : '';
 
                 const transactionItem = document.createElement('div');
-                transactionItem.className = `bg-white p-4 rounded-lg shadow-sm flex justify-between items-center relative pl-8`; 
+                transactionItem.className = `transaction-entry flex justify-between items-center relative`;
                 transactionItem.innerHTML = `
                     <div class="${bulletClass}" style="${bulletStyle}" data-id="${transaction.id}"></div>
                     <div class="flex-grow min-w-0">

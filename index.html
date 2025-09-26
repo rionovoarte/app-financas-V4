@@ -50,13 +50,31 @@
 
     <!-- Conteúdo Principal do App -->
     <div id="app-content" class="hidden">
-        <main class="pb-28 pt-5 px-4 md:px-6"> <!-- Padding inferior para não sobrepor a barra de navegação -->
-            
+        <main class="app-shell pb-28 pt-8 px-4 md:px-8"> <!-- Padding inferior para não sobrepor a barra de navegação -->
+
             <!-- Seção Dashboard (Visão Geral) -->
             <section id="dashboard" class="page-section active">
 
+                <div class="dashboard-hero surface-card mb-6">
+                    <div class="dashboard-hero-content">
+                        <span class="dashboard-hero-chip">Planejamento inteligente</span>
+                        <h1 class="dashboard-hero-title">Visão completa das suas finanças</h1>
+                        <p class="dashboard-hero-subtitle">Acompanhe saldos, metas e gastos com um visual moderno e organizado.</p>
+                    </div>
+                    <div class="dashboard-hero-actions">
+                        <div class="dashboard-hero-status">
+                            <span class="dashboard-hero-label">Próximo passo</span>
+                            <span class="dashboard-hero-value">Registrar um novo lançamento</span>
+                        </div>
+                        <button type="button" class="dashboard-hero-action nav-link" data-page="transactions">
+                            Ir para transações
+                            <i class="fa-solid fa-arrow-trend-up"></i>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Resumos Financeiros -->
-                <div class="grid grid-cols-2 gap-4 mb-6">
+                <div class="dashboard-summary-grid mb-6">
                     <!-- Card Saldo Atual -->
                     <div class="summary-card summary-card-positive">
                         <div class="summary-card-header">
@@ -91,7 +109,7 @@
                 </div>
 
                  <!-- Gráficos -->
-                <div class="bg-white p-4 rounded-xl shadow-md mb-6">
+                <div class="surface-card chart-card p-6 mb-6">
                     <div class="flex justify-between items-center mb-4">
                         <div class="flex-1">
                              <h2 class="text-lg font-semibold text-gray-800">Análise Gráfica</h2>
@@ -122,7 +140,7 @@
                 </div>
 
                 <!-- Insights Rápidos -->
-                <div class="bg-white p-4 rounded-xl shadow-md">
+                <div class="surface-card insights-card p-6">
                     <div class="flex justify-between items-center mb-2">
                         <h2 class="text-lg font-semibold text-gray-800">Insights da IA</h2>
                         <button id="generate-insights-button" class="text-sm text-[var(--color-blue-primary)] font-semibold">Gerar Novo</button>
@@ -138,7 +156,7 @@
             <!-- Seção Transações -->
             <section id="transactions" class="page-section">
                 <!-- Cabeçalho Compacto de Resumo -->
-                <div class="compact-summary-header">
+                <div class="compact-summary-header surface-card">
                     <div class="compact-summary-item">
                         <span class="compact-summary-label">Saldo</span>
                         <span id="compact-balance" class="compact-summary-value text-[var(--color-green-positive)]">R$ 0,00</span>
@@ -152,16 +170,16 @@
                         <span id="compact-caixinhas" class="compact-summary-value text-blue-500">R$ 0,00</span>
                     </div>
                 </div>
-                
+
                 <!-- Conteúdo de Lançamentos -->
                 <!-- Navegação por Mês -->
-                <div class="flex justify-between items-center bg-white p-2 rounded-xl shadow-sm mb-4">
+                <div class="surface-card surface-card--toolbar flex justify-between items-center p-2 md:p-4 mb-4">
                     <button id="prev-month-button" class="p-2 rounded-full hover:bg-gray-100"><i class="fa-solid fa-chevron-left"></i></button>
                     <span id="current-month-display" class="text-lg font-semibold">Julho de 2024</span>
                     <button id="next-month-button" class="p-2 rounded-full hover:bg-gray-100"><i class="fa-solid fa-chevron-right"></i></button>
                 </div>
                  <!-- Filtros Minimalistas -->
-                <div class="bg-white p-3 rounded-xl shadow-sm mb-4">
+                <div class="surface-card surface-card--filters p-4 mb-4">
                     <div id="filter-container-pills" class="filter-pills-container">
                         <!-- Botões de filtro serão injetados aqui pelo JS -->
                     </div>
@@ -175,7 +193,7 @@
 
 
                 <!-- Lista de Transações com Linha do Tempo -->
-                <div id="transactions-list-container" class="relative">
+                <div id="transactions-list-container" class="relative surface-card surface-card--list">
                     <!-- A linha do tempo vertical -->
                     <div class="absolute left-3 top-0 bottom-0 w-0.5 bg-gray-200"></div>
                     <!-- Transações serão injetadas aqui -->
@@ -185,7 +203,7 @@
             <!-- Seção Assistente IA -->
             <section id="chat" class="page-section">
                 <!-- Conteúdo do Chat é gerenciado pelo CSS para ter altura total -->
-                <div id="chat-container" class="bg-white rounded-2xl shadow-lg flex flex-col h-full">
+                <div id="chat-container" class="surface-card chat-surface flex flex-col h-full">
                     <!-- Cabeçalho do Chat -->
                     <div class="flex items-center justify-between p-4 border-b border-gray-200">
                         <button id="chat-back-button" class="p-2 rounded-full hover:bg-gray-100">
@@ -239,7 +257,7 @@
                 <h1 class="text-3xl font-bold text-[var(--color-heading-green)] mb-6">Mais Opções</h1>
                 <div class="space-y-4">
                      <!-- Gerenciar Categorias -->
-                    <a href="#" data-page="categories-management" class="nav-link bg-white p-4 rounded-xl shadow-sm flex items-center justify-between hover:bg-gray-50 transition">
+                    <a href="#" data-page="categories-management" class="nav-link surface-card surface-card--interactive flex items-center justify-between transition">
                         <div class="flex items-center">
                             <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center mr-4">
                                 <i class="fa-solid fa-tags text-[var(--color-option-icon-green)]"></i>
@@ -251,9 +269,9 @@
                         </div>
                         <i class="fa-solid fa-chevron-right text-gray-400"></i>
                     </a>
-                    
+
                     <!-- Gerenciar Orçamentos -->
-                    <a href="#" data-page="budget-management" class="nav-link bg-white p-4 rounded-xl shadow-sm flex items-center justify-between hover:bg-gray-50 transition">
+                    <a href="#" data-page="budget-management" class="nav-link surface-card surface-card--interactive flex items-center justify-between transition">
                         <div class="flex items-center">
                             <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center mr-4">
                                 <i class="fa-solid fa-chart-pie text-[var(--color-option-icon-green)]"></i>
@@ -267,7 +285,7 @@
                     </a>
 
                     <!-- Configurar IA -->
-                    <a href="#" data-page="ai-config" class="nav-link bg-white p-4 rounded-xl shadow-sm flex items-center justify-between hover:bg-gray-50 transition">
+                    <a href="#" data-page="ai-config" class="nav-link surface-card surface-card--interactive flex items-center justify-between transition">
                         <div class="flex items-center">
                              <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center mr-4">
                                 <i class="fa-solid fa-robot text-[var(--color-option-icon-green)]"></i>
@@ -279,9 +297,9 @@
                         </div>
                          <i class="fa-solid fa-chevron-right text-gray-400"></i>
                     </a>
-                    
+
                      <!-- Gerenciar Chaves de API -->
-                    <a href="#" data-page="api-management" class="nav-link bg-white p-4 rounded-xl shadow-sm flex items-center justify-between hover:bg-gray-50 transition">
+                    <a href="#" data-page="api-management" class="nav-link surface-card surface-card--interactive flex items-center justify-between transition">
                         <div class="flex items-center">
                             <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center mr-4">
                                 <i class="fa-solid fa-key text-[var(--color-option-icon-green)]"></i>
@@ -295,7 +313,7 @@
                     </a>
 
                     <!-- Testar Notificação -->
-                    <a href="#" id="test-notification-button" class="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between hover:bg-gray-50 transition cursor-pointer">
+                    <a href="#" id="test-notification-button" class="surface-card surface-card--interactive flex items-center justify-between transition cursor-pointer">
                         <div class="flex items-center">
                             <div class="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center mr-4">
                                 <i class="fa-solid fa-paper-plane text-blue-500"></i>
@@ -306,9 +324,9 @@
                             </div>
                         </div>
                     </a>
-                    
+
                     <!-- Botão de Sair -->
-                    <div id="logout-button-desktop" class="bg-white p-4 rounded-xl shadow-sm flex items-center justify-between hover:bg-gray-50 transition cursor-pointer">
+                    <div id="logout-button-desktop" class="surface-card surface-card--interactive flex items-center justify-between transition cursor-pointer">
                         <div class="flex items-center">
                             <div class="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center mr-4">
                                 <i class="fa-solid fa-right-from-bracket text-red-500"></i>
@@ -333,7 +351,7 @@
                         <p class="text-gray-500">Adicione, edite ou remova categorias e caixinhas.</p>
                     </div>
                 </div>
-                <div class="bg-white p-4 rounded-xl shadow-md mb-4">
+                <div class="surface-card p-4 mb-4">
                     <input type="text" id="category-search-input" placeholder="Buscar categoria..." class="w-full border border-gray-300 rounded-lg py-2 px-4 focus:outline-none focus:ring-2 focus:ring-[var(--color-blue-primary)]">
                 </div>
                 <div class="flex gap-2 mb-4">
@@ -368,7 +386,7 @@
                         <i class="fa-solid fa-brain"></i> Otimizar com IA
                     </button>
                 </div>
-                 <div id="no-budgets-message" class="text-center text-gray-500 py-8">
+                 <div id="no-budgets-message" class="surface-card text-center text-gray-500 py-8">
                     <i class="fa-solid fa-money-bill-transfer text-4xl text-gray-300 mb-4"></i>
                     <p>Nenhum orçamento configurado.</p>
                     <p class="text-sm">Clique em "Novo Orçamento" para começar.</p>
@@ -377,7 +395,7 @@
                     <!-- Cards de orçamento serão injetados aqui -->
                 </div>
             </section>
-            
+
             <!-- Sub-página: Configurações da IA -->
             <section id="ai-config" class="page-section">
                 <div class="flex items-center mb-6">
@@ -389,7 +407,7 @@
                         <p class="text-gray-500">Personalize o comportamento do seu assistente.</p>
                     </div>
                 </div>
-                <div class="bg-white p-6 rounded-xl shadow-md">
+                <div class="surface-card p-6">
                     <div class="mb-4">
                         <label for="ai-persona" class="block text-sm font-medium text-gray-700 mb-1">Personagem (Papel)</label>
                         <textarea id="ai-persona" rows="4" class="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-[var(--color-blue-primary)]" placeholder="Ex: Você é um educador financeiro especialista..."></textarea>
