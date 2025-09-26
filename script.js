@@ -2141,6 +2141,44 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    function sanitizeAiMessage(text) {
+        const allowedTags = new Set(['STRONG', 'BR', 'UL', 'LI']);
+        const template = document.createElement('template');
+        template.innerHTML = typeof text === 'string' ? text : '';
+        const fragment = document.createDocumentFragment();
+
+        const sanitizeNode = (node, target) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                target.appendChild(document.createTextNode(node.textContent));
+                return;
+            }
+
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const tagName = node.tagName;
+
+                if (tagName === 'SCRIPT' || tagName === 'STYLE') {
+                    return;
+                }
+
+                if (!allowedTags.has(tagName)) {
+                    Array.from(node.childNodes).forEach(child => sanitizeNode(child, target));
+                    return;
+                }
+
+                const cleanElement = document.createElement(tagName.toLowerCase());
+                if (tagName !== 'BR') {
+                    Array.from(node.childNodes).forEach(child => sanitizeNode(child, cleanElement));
+                }
+
+                target.appendChild(cleanElement);
+            }
+        };
+
+        Array.from(template.content.childNodes).forEach(node => sanitizeNode(node, fragment));
+
+        return fragment;
+    }
+
     function appendMessage(sender, text, type = 'text') {
         const messageDiv = document.createElement('div');
         const bubbleDiv = document.createElement('div');
@@ -2156,8 +2194,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Usamos innerHTML para renderizar tags HTML básicas que o modelo de IA pode gerar
-        bubbleDiv.innerHTML = text; 
+        if (sender === 'user') {
+            bubbleDiv.textContent = text;
+        } else {
+            bubbleDiv.appendChild(sanitizeAiMessage(text));
+        }
         messageDiv.appendChild(bubbleDiv);
         chatMessagesDiv.appendChild(messageDiv);
 
@@ -2310,7 +2351,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 result.candidates[0].content && result.candidates[0].content.parts &&
                 result.candidates[0].content.parts.length > 0 && result.candidates[0].content.parts[0].text) {
                 const aiResponseText = result.candidates[0].content.parts[0].text;
-                insightsContentArea.innerHTML = aiResponseText;
+                insightsContentArea.replaceChildren(sanitizeAiMessage(aiResponseText));
             } else if (result.error) {
                 insightsContentArea.innerHTML = `<p class="text-red-500">Erro da API: ${result.error.message || 'Erro desconhecido da API Gemini.'}</p>`;
                 console.error('Erro da API Gemini para Insights:', result.error);
@@ -2383,7 +2424,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 result.candidates[0].content && result.candidates[0].content.parts &&
                 result.candidates[0].content.parts.length > 0 && result.candidates[0].content.parts[0].text) {
                 const aiResponseText = result.candidates[0].content.parts[0].text;
-                budgetOptimizationText.innerHTML = aiResponseText;
+                budgetOptimizationText.replaceChildren(sanitizeAiMessage(aiResponseText));
             } else if (result.error) {
                 budgetOptimizationText.innerHTML = `<p class="text-red-500">Erro da API: ${result.error.message || 'Erro desconhecido da API Gemini.'}</p>`;
                 console.error('Erro da API Gemini para Otimização de Orçamento:', result.error);
