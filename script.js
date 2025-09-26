@@ -38,7 +38,7 @@ let aiConfig = {
 
 // Múltiplas chaves de API Gemini (ARRAY)
 let geminiApiKeys = []; 
-let currentGeminiApiKeyIndex = 0; // Índice da chave de API atualmente em uso
+let currentGeminiApiKeyIndex = -1; // Índice da última chave de API usada com sucesso
 let chatHistory = [];
 let isSendingMessage = false;
 let isGeminiApiReady = false;
@@ -59,6 +59,7 @@ let geminiApiKeyHealth = loadGeminiApiKeyHealth();
 let apiKeyStatusListElement = null;
 let scheduleApiKeyUiRefresh = null;
 let hasWarnedAllKeysBlocked = false;
+let geminiKeyAvailabilityTimer = null;
 
 // Flag e armazenamento para dados financeiros para a IA
 let hasConsultedFinancialData = false;
@@ -110,6 +111,42 @@ function persistGeminiApiKeyHealth() {
         localStorage.setItem(GEMINI_API_KEY_HEALTH_STORAGE_KEY, JSON.stringify(geminiApiKeyHealth));
     } catch (error) {
         console.warn('Não foi possível salvar o status das chaves Gemini no armazenamento local.', error);
+    }
+}
+
+function scheduleNextGeminiKeyAvailabilityCheck() {
+    if (typeof window === 'undefined') {
+        return;
+    }
+
+    if (geminiKeyAvailabilityTimer) {
+        clearTimeout(geminiKeyAvailabilityTimer);
+        geminiKeyAvailabilityTimer = null;
+    }
+
+    const now = Date.now();
+    let nearestDisabledUntil = null;
+
+    geminiApiKeyHealth.forEach(state => {
+        if (!state) {
+            return;
+        }
+        const { status, disabledUntil } = state;
+        if (status === GEMINI_API_KEY_STATUS.COOLDOWN && disabledUntil && disabledUntil > now) {
+            nearestDisabledUntil = nearestDisabledUntil === null
+                ? disabledUntil
+                : Math.min(nearestDisabledUntil, disabledUntil);
+        }
+    });
+
+    if (nearestDisabledUntil) {
+        const delay = Math.max(1000, nearestDisabledUntil - now + 500);
+        geminiKeyAvailabilityTimer = setTimeout(() => {
+            geminiKeyAvailabilityTimer = null;
+            if (typeof scheduleApiKeyUiRefresh === 'function') {
+                scheduleApiKeyUiRefresh();
+            }
+        }, delay);
     }
 }
 
@@ -168,7 +205,11 @@ function syncGeminiApiKeyHealthWithKeys() {
         }
         return createApiKeyHealthState(trimmedKey);
     });
+    if (currentGeminiApiKeyIndex >= geminiApiKeys.length || !geminiApiKeys[currentGeminiApiKeyIndex]?.trim()) {
+        currentGeminiApiKeyIndex = -1;
+    }
     persistGeminiApiKeyHealth();
+    scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
         scheduleApiKeyUiRefresh();
     }
@@ -215,6 +256,8 @@ function getAvailableGeminiKeyEntries(options = {}) {
         }
     }
 
+    scheduleNextGeminiKeyAvailabilityCheck();
+
     return availableEntries;
 }
 
@@ -233,6 +276,7 @@ function markApiKeyAsHealthy(index) {
     };
     persistGeminiApiKeyHealth();
     hasWarnedAllKeysBlocked = false;
+    scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
         scheduleApiKeyUiRefresh();
     }
@@ -249,6 +293,7 @@ function markApiKeyAsCoolingDown(index, minutes, reason) {
         failureCount: (state.failureCount || 0) + 1
     };
     persistGeminiApiKeyHealth();
+    scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
         scheduleApiKeyUiRefresh();
     }
@@ -264,6 +309,7 @@ function markApiKeyAsInvalid(index, reason) {
         failureCount: (state.failureCount || 0) + 1
     };
     persistGeminiApiKeyHealth();
+    scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
         scheduleApiKeyUiRefresh();
     }
@@ -293,6 +339,7 @@ function resetApiKeyHealth(includeInvalid = true) {
     });
     persistGeminiApiKeyHealth();
     hasWarnedAllKeysBlocked = false;
+    scheduleNextGeminiKeyAvailabilityCheck();
     if (typeof scheduleApiKeyUiRefresh === 'function') {
         scheduleApiKeyUiRefresh();
     }
@@ -672,8 +719,17 @@ async function tryNextApiKey(payload) {
 
     let lastError = null;
 
-    for (let entryIndex = 0; entryIndex < availableEntries.length; entryIndex++) {
-        const { key: apiKey, index: originalIndex } = availableEntries[entryIndex];
+    let orderedEntries = availableEntries;
+    if (availableEntries.length > 1 && currentGeminiApiKeyIndex >= 0) {
+        const lastUsedPosition = availableEntries.findIndex(entry => entry.index === currentGeminiApiKeyIndex);
+        if (lastUsedPosition >= 0) {
+            const rotationStart = (lastUsedPosition + 1) % availableEntries.length;
+            orderedEntries = availableEntries.slice(rotationStart).concat(availableEntries.slice(0, rotationStart));
+        }
+    }
+
+    for (let entryIndex = 0; entryIndex < orderedEntries.length; entryIndex++) {
+        const { key: apiKey, index: originalIndex } = orderedEntries[entryIndex];
         const model = payload.generationConfig && payload.generationConfig.response_mime_type === "application/json"
             ? "gemini-1.5-flash-latest"
             : "gemini-1.5-flash-latest";
@@ -2664,12 +2720,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         const availableEntries = getAvailableGeminiKeyEntries({ skipUiRefresh: true });
-        const activeIndexDisplay = Math.min(Math.max(currentGeminiApiKeyIndex + 1, 1), configuredKeys.length);
+        const activeIndexDisplay = currentGeminiApiKeyIndex >= 0
+            ? Math.min(currentGeminiApiKeyIndex + 1, configuredKeys.length)
+            : null;
 
         if (availableEntries.length === 0) {
             activeApiKeyIndicator.textContent = `Chaves pausadas (${configuredKeys.length} configuradas)`;
         } else {
-            activeApiKeyIndicator.textContent = `Chave ativa: ${activeIndexDisplay}/${configuredKeys.length} · Disponíveis: ${availableEntries.length}`;
+            if (activeIndexDisplay !== null) {
+                activeApiKeyIndicator.textContent = `Chave ativa: ${activeIndexDisplay}/${configuredKeys.length} · Disponíveis: ${availableEntries.length}`;
+            } else {
+                activeApiKeyIndicator.textContent = `Chaves disponíveis: ${availableEntries.length}/${configuredKeys.length}`;
+            }
         }
         activeApiKeyIndicator.classList.remove('hidden');
     }
