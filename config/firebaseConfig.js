@@ -6,7 +6,7 @@
   storageBucket: "offline-d2e68.firebasestorage.app",
   messagingSenderId: "524684058670",
   appId: "1:524684058670:web:5141130aee53e059cc7fbf"
-  ];
+  };
 
   const normalize = (value) => (typeof value === 'string' ? value.trim() : value);
   const hasAllRequiredKeys = (config) =>
