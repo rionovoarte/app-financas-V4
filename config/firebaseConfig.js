@@ -1,11 +1,11 @@
 (function injectFirebaseConfig() {
   const REQUIRED_KEYS = [
-    'apiKey',
-    'authDomain',
-    'projectId',
-    'storageBucket',
-    'messagingSenderId',
-    'appId'
+      apiKey: "AIzaSyBEuFW_VQEx_smJUOxCsF0Jug_lnzUA2aw",
+  authDomain: "offline-d2e68.firebaseapp.com",
+  projectId: "offline-d2e68",
+  storageBucket: "offline-d2e68.firebasestorage.app",
+  messagingSenderId: "524684058670",
+  appId: "1:524684058670:web:5141130aee53e059cc7fbf"
   ];
 
   const normalize = (value) => (typeof value === 'string' ? value.trim() : value);
