@@ -8,6 +8,8 @@
   appId: "1:524684058670:web:5141130aee53e059cc7fbf"
   };
 
+  const REQUIRED_KEYS = ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'];
+
   const normalize = (value) => (typeof value === 'string' ? value.trim() : value);
   const hasAllRequiredKeys = (config) =>
     !!config &&
