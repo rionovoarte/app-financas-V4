@@ -7,15 +7,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, onSnapsh
 
 // Variáveis globais do ambiente Canvas (preenchidas em tempo de execução)
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-// ATENÇÃO: Firebase Config agora está hardcoded com as credenciais fornecidas pelo usuário.
-const firebaseConfig = {
-    apiKey: "AIzaSyBEuFW_VQEx_smJUOxCsF0Jug_lnzUA2aw",
-    authDomain: "offline-d2e68.firebaseapp.com",
-    projectId: "offline-d2e68",
-    storageBucket: "offline-d2e68.firebasestorage.app",
-    messagingSenderId: "524684058670",
-    appId: "1:524684058670:web:5141130aee53e059cc7fbf"
-};
+// Configuração do Firebase injetada dinamicamente pelo servidor de hospedagem
+const firebaseConfig = (() => {
+    if (typeof window === 'undefined' || !window.__FIREBASE_CONFIG__) {
+        throw new Error('Firebase configuration was not provided.');
+    }
+    return window.__FIREBASE_CONFIG__;
+})();
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 // Instâncias do Firebase
